@@ -33,7 +33,7 @@ export class AuthService {
       email: dto.email,
       passwordHash,
       phone: dto.phone,
-      role: dto.role ?? Role.USER,
+      role: Role.USER,
     });
 
     return this.generateTokens(user);
