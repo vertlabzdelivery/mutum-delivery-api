@@ -1,0 +1,188 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  phone        String?
+  role         Role     @default(USER)
+
+  addresses    Address[]
+  orders       Order[]
+  restaurants  Restaurant[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Address {
+  id          String   @id @default(uuid())
+  userId      String
+  label       String?
+  street      String
+  number      String
+  district    String
+  city        String
+  state       String
+  zipCode     String
+  complement  String?
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Restaurant {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  logoUrl     String?
+  phone       String?
+  address     String
+  ownerId     String
+  minOrder    Decimal? @db.Decimal(10, 2)
+  isActive    Boolean  @default(true)
+
+  owner       User     @relation(fields: [ownerId], references: [id])
+  menuItems   MenuItem[]
+  orders      Order[]
+  hours       OpeningHour[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model OpeningHour {
+  id           String @id @default(uuid())
+  restaurantId String
+  dayOfWeek    Int
+  openTime     String
+  closeTime    String
+
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+}
+
+model MenuItem {
+  id           String   @id @default(uuid())
+  restaurantId String
+  name         String
+  description  String?
+  price        Decimal  @db.Decimal(10, 2)
+  imageUrl     String?
+  isAvailable  Boolean  @default(true)
+
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  options      MenuItemOption[]
+  orderItems   OrderItem[]
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model MenuItemOption {
+  id         String @id @default(uuid())
+  menuItemId String
+  name       String
+  required   Boolean @default(false)
+  minSelect  Int?
+  maxSelect  Int?
+
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  choices    MenuItemChoice[]
+}
+
+model MenuItemChoice {
+  id       String   @id @default(uuid())
+  optionId String
+  name     String
+  price    Decimal? @db.Decimal(10, 2)
+
+  option   MenuItemOption @relation(fields: [optionId], references: [id])
+}
+
+model Order {
+  id             String        @id @default(uuid())
+  userId         String
+  restaurantId   String
+  status         OrderStatus   @default(PENDING)
+  paymentMethod  PaymentMethod
+  subtotal       Decimal       @db.Decimal(10, 2)
+  deliveryFee    Decimal       @db.Decimal(10, 2)
+  total          Decimal       @db.Decimal(10, 2)
+  notes          String?
+  deliveryName   String
+  deliveryPhone  String
+  deliveryStreet String
+  deliveryNumber String
+  deliveryDistrict String
+  deliveryCity   String
+  deliveryState  String
+  deliveryZipCode String
+  deliveryComplement String?
+
+  user           User          @relation(fields: [userId], references: [id])
+  restaurant     Restaurant    @relation(fields: [restaurantId], references: [id])
+  items          OrderItem[]
+
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([restaurantId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id         String   @id @default(uuid())
+  orderId    String
+  menuItemId String
+  name       String
+  quantity   Int
+  unitPrice  Decimal  @db.Decimal(10, 2)
+  totalPrice Decimal  @db.Decimal(10, 2)
+
+  order      Order    @relation(fields: [orderId], references: [id])
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  selections OrderItemSelection[]
+}
+
+model OrderItemSelection {
+  id          String   @id @default(uuid())
+  orderItemId String
+  choiceName  String
+  price       Decimal? @db.Decimal(10, 2)
+
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
+}
+
+enum Role {
+  USER
+  RESTAURANT
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING
+  ACCEPTED
+  PREPARING
+  DELIVERY
+  DELIVERED
+  CANCELED
+}
+
+enum PaymentMethod {
+  CASH
+  PIX
+  CREDIT_CARD
+  DEBIT_CARD
+}
