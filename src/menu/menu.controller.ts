@@ -13,7 +13,9 @@ import {
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
+import type { CurrentUserData } from '../common/interfaces/current-user.interface';
 import { CreateMenuItemDto } from './dto/create-menu-item.dto';
 import { UpdateMenuItemStatusDto } from './dto/update-menu-item-status.dto';
 import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
@@ -52,8 +54,11 @@ export class MenuController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.RESTAURANT)
   @Post()
-  create(@Body() dto: CreateMenuItemDto) {
-    return this.menuService.create(dto);
+  create(
+    @Body() dto: CreateMenuItemDto,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.menuService.create(dto, user);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -62,8 +67,9 @@ export class MenuController {
   update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateMenuItemDto,
+    @CurrentUser() user: CurrentUserData,
   ) {
-    return this.menuService.update(id, dto);
+    return this.menuService.update(id, dto, user);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -72,14 +78,18 @@ export class MenuController {
   updateStatus(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateMenuItemStatusDto,
+    @CurrentUser() user: CurrentUserData,
   ) {
-    return this.menuService.updateStatus(id, dto.isAvailable);
+    return this.menuService.updateStatus(id, dto.isAvailable, user);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.RESTAURANT)
   @Delete(':id')
-  remove(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.menuService.remove(id);
+  remove(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.menuService.remove(id, user);
   }
 }

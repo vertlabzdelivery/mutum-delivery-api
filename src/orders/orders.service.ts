@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { OrderStatus, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import type { CurrentUserData } from '../common/interfaces/current-user.interface';
+import { ORDER_STATUS_FLOW } from './constants/order-status-flow';
 import { CreateOrderDto } from './dto/create-order.dto';
 
 @Injectable()
@@ -14,8 +16,8 @@ export class OrdersService {
 
   async create(userId: string, dto: CreateOrderDto) {
     const restaurant = await this.prisma.restaurant.findUnique({
-  where: { id: dto.restaurantId },
-});
+      where: { id: dto.restaurantId },
+    });
 
     if (!restaurant) {
       throw new NotFoundException('Restaurante não encontrado');
@@ -57,9 +59,12 @@ export class OrdersService {
         throw new BadRequestException('Item do cardápio não encontrado');
       }
 
-      const selectionsTotal = (item.selections ?? []).reduce((acc, selection) => {
-        return acc.plus(new Prisma.Decimal(selection.price ?? 0));
-      }, new Prisma.Decimal(0));
+      const selectionsTotal = (item.selections ?? []).reduce(
+        (acc, selection) => {
+          return acc.plus(new Prisma.Decimal(selection.price ?? 0));
+        },
+        new Prisma.Decimal(0),
+      );
 
       const unitPrice = new Prisma.Decimal(menuItem.price).plus(selectionsTotal);
       const totalPrice = unitPrice.mul(item.quantity);
@@ -148,15 +153,23 @@ export class OrdersService {
     });
   }
 
-  async findRestaurantOrders(restaurantId: string) {
+  async findRestaurantOrders(
+    restaurantId: string,
+    currentUser: CurrentUserData,
+  ) {
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },
-      select: { id: true },
+      select: {
+        id: true,
+        ownerId: true,
+      },
     });
 
     if (!restaurant) {
       throw new NotFoundException('Restaurante não encontrado');
     }
+
+    this.ensureCanManageRestaurant(restaurant.ownerId, currentUser);
 
     return this.prisma.order.findMany({
       where: { restaurantId },
@@ -178,7 +191,7 @@ export class OrdersService {
     });
   }
 
-  async findOne(id: string, currentUser: { userId: string; role: Role }) {
+  async findOne(id: string, currentUser: CurrentUserData) {
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: {
@@ -223,7 +236,7 @@ export class OrdersService {
   async updateStatus(
     id: string,
     status: OrderStatus,
-    currentUser: { userId: string; role: Role },
+    currentUser: CurrentUserData,
   ) {
     const order = await this.prisma.order.findUnique({
       where: { id },
@@ -241,14 +254,8 @@ export class OrdersService {
       throw new NotFoundException('Pedido não encontrado');
     }
 
-    const isAdmin = currentUser.role === Role.ADMIN;
-    const isRestaurantOwner = order.restaurant.ownerId === currentUser.userId;
-
-    if (!isAdmin && !isRestaurantOwner) {
-      throw new ForbiddenException(
-        'Você não tem permissão para alterar este pedido',
-      );
-    }
+    this.ensureCanManageRestaurant(order.restaurant.ownerId, currentUser);
+    this.ensureValidStatusTransition(order.status, status);
 
     return this.prisma.order.update({
       where: { id },
@@ -274,5 +281,38 @@ export class OrdersService {
         },
       },
     });
+  }
+
+  private ensureCanManageRestaurant(
+    ownerId: string,
+    currentUser: CurrentUserData,
+  ) {
+    const isAdmin = currentUser.role === Role.ADMIN;
+    const isOwner = ownerId === currentUser.userId;
+
+    if (!isAdmin && !isOwner) {
+      throw new ForbiddenException(
+        'Você não tem permissão para acessar os pedidos deste restaurante',
+      );
+    }
+  }
+
+  private ensureValidStatusTransition(
+    currentStatus: OrderStatus,
+    nextStatus: OrderStatus,
+  ) {
+    if (currentStatus === nextStatus) {
+      throw new BadRequestException(
+        `O pedido já está com status ${currentStatus}`,
+      );
+    }
+
+    const allowedNextStatuses = ORDER_STATUS_FLOW[currentStatus];
+
+    if (!allowedNextStatuses.includes(nextStatus)) {
+      throw new BadRequestException(
+        `Transição inválida: não é permitido alterar de ${currentStatus} para ${nextStatus}`,
+      );
+    }
   }
 }

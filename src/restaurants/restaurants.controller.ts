@@ -9,13 +9,15 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
-import { Roles } from '../common/decorators/roles.decorator';
-import { RolesGuard } from '../common/guards/roles.guard';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RestaurantsService } from './restaurants.service';
+import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { RolesGuard } from '../common/guards/roles.guard';
+import type { CurrentUserData } from '../common/interfaces/current-user.interface';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
 import { UpdateRestaurantStatusDto } from './dto/update-restaurant-status.dto';
+import { RestaurantsService } from './restaurants.service';
 
 @Controller('restaurants')
 export class RestaurantsController {
@@ -24,6 +26,13 @@ export class RestaurantsController {
   @Get('active')
   findActive() {
     return this.restaurantsService.findActive();
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.RESTAURANT)
+  @Get('my/owned')
+  findOwned(@CurrentUser() user: CurrentUserData) {
+    return this.restaurantsService.findOwnedByUser(user.userId);
   }
 
   @Get()
@@ -44,22 +53,24 @@ export class RestaurantsController {
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.ADMIN, Role.RESTAURANT)
   @Patch(':id')
   update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateRestaurantDto,
+    @CurrentUser() user: CurrentUserData,
   ) {
-    return this.restaurantsService.update(id, dto);
+    return this.restaurantsService.update(id, dto, user);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @Roles(Role.ADMIN, Role.RESTAURANT)
   @Patch(':id/status')
   updateStatus(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateRestaurantStatusDto,
+    @CurrentUser() user: CurrentUserData,
   ) {
-    return this.restaurantsService.updateStatus(id, dto.isActive);
+    return this.restaurantsService.updateStatus(id, dto.isActive, user);
   }
 }
