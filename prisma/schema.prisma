@@ -15,7 +15,7 @@ model User {
   phone        String?
   role         Role     @default(USER)
 
-  addresses    Address[]
+  addresses    UserAddress[]
   orders       Order[]
   restaurants  Restaurant[]
 
@@ -23,42 +23,101 @@ model User {
   updatedAt    DateTime @updatedAt
 }
 
-model Address {
-  id          String   @id @default(uuid())
-  userId      String
-  label       String?
-  street      String
-  number      String
-  district    String
-  city        String
-  state       String
-  zipCode     String
-  complement  String?
+model State {
+  id        String   @id @default(uuid())
+  name      String
+  code      String   @unique
 
-  user        User     @relation(fields: [userId], references: [id])
+  cities    City[]
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model City {
+  id             String   @id @default(uuid())
+  name           String
+  stateId        String
+
+  state          State    @relation(fields: [stateId], references: [id])
+  neighborhoods  Neighborhood[]
+  addresses      UserAddress[]
+  restaurants    Restaurant[]
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([name, stateId])
+  @@index([stateId])
+}
+
+model Neighborhood {
+  id             String   @id @default(uuid())
+  name           String
+  cityId         String
+
+  city           City     @relation(fields: [cityId], references: [id])
+  addresses      UserAddress[]
+  deliveryZones  RestaurantDeliveryZone[]
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([name, cityId])
+  @@index([cityId])
+}
+
+model UserAddress {
+  id              String   @id @default(uuid())
+  userId          String
+  label           String?
+  street          String
+  number          String
+  complement      String?
+  reference       String?
+  zipCode         String
+  cityId          String
+  neighborhoodId  String
+  isDefault       Boolean  @default(false)
+
+  user            User         @relation(fields: [userId], references: [id])
+  city            City         @relation(fields: [cityId], references: [id])
+  neighborhood    Neighborhood @relation(fields: [neighborhoodId], references: [id])
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+  @@index([cityId])
+  @@index([neighborhoodId])
 }
 
 model Restaurant {
-  id          String   @id @default(uuid())
-  name        String
-  description String?
-  logoUrl     String?
-  phone       String?
-  address     String
-  ownerId     String
-  minOrder    Decimal? @db.Decimal(10, 2)
-  isActive    Boolean  @default(true)
+  id            String   @id @default(uuid())
+  name          String
+  description   String?
+  logoUrl       String?
+  phone         String?
+  address       String
+  ownerId       String
+  cityId        String?
+  minOrder      Decimal? @db.Decimal(10, 2)
+  isActive      Boolean  @default(true)
 
-  owner       User     @relation(fields: [ownerId], references: [id])
-  menuItems   MenuItem[]
-  orders      Order[]
-  hours       OpeningHour[]
+  owner         User     @relation(fields: [ownerId], references: [id])
+  city          City?    @relation(fields: [cityId], references: [id])
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  menuItems     MenuItem[]
+  orders        Order[]
+  hours         OpeningHour[]
+  deliveryZones RestaurantDeliveryZone[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([ownerId])
+  @@index([cityId])
+  @@index([isActive])
 }
 
 model OpeningHour {
@@ -69,6 +128,29 @@ model OpeningHour {
   closeTime    String
 
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+
+  @@index([restaurantId])
+}
+
+model RestaurantDeliveryZone {
+  id             String   @id @default(uuid())
+  restaurantId   String
+  neighborhoodId String
+  deliveryFee    Decimal  @db.Decimal(10, 2)
+  minTime        Int
+  maxTime        Int
+  isActive       Boolean  @default(true)
+
+  restaurant     Restaurant   @relation(fields: [restaurantId], references: [id])
+  neighborhood   Neighborhood @relation(fields: [neighborhoodId], references: [id])
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([restaurantId, neighborhoodId])
+  @@index([restaurantId])
+  @@index([neighborhoodId])
+  @@index([isActive])
 }
 
 model MenuItem {
@@ -86,6 +168,9 @@ model MenuItem {
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  @@index([restaurantId])
+  @@index([isAvailable])
 }
 
 model MenuItemOption {
@@ -98,6 +183,8 @@ model MenuItemOption {
 
   menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
   choices    MenuItemChoice[]
+
+  @@index([menuItemId])
 }
 
 model MenuItemChoice {
@@ -107,39 +194,52 @@ model MenuItemChoice {
   price    Decimal? @db.Decimal(10, 2)
 
   option   MenuItemOption @relation(fields: [optionId], references: [id])
+
+  @@index([optionId])
 }
 
 model Order {
-  id             String        @id @default(uuid())
-  userId         String
-  restaurantId   String
-  status         OrderStatus   @default(PENDING)
-  paymentMethod  PaymentMethod
-  subtotal       Decimal       @db.Decimal(10, 2)
-  deliveryFee    Decimal       @db.Decimal(10, 2)
-  total          Decimal       @db.Decimal(10, 2)
-  notes          String?
-  deliveryName   String
-  deliveryPhone  String
-  deliveryStreet String
-  deliveryNumber String
-  deliveryDistrict String
-  deliveryCity   String
-  deliveryState  String
-  deliveryZipCode String
-  deliveryComplement String?
+  id                   String        @id @default(uuid())
+  userId               String
+  restaurantId         String
+  userAddressId        String?
+  neighborhoodName     String?
+  status               OrderStatus   @default(PENDING)
+  paymentMethod        PaymentMethod
+  subtotal             Decimal       @db.Decimal(10, 2)
+  deliveryFee          Decimal       @db.Decimal(10, 2)
+  total                Decimal       @db.Decimal(10, 2)
+  notes                String?
 
-  user           User          @relation(fields: [userId], references: [id])
-  restaurant     Restaurant    @relation(fields: [restaurantId], references: [id])
-  items          OrderItem[]
+  deliveryName         String
+  deliveryPhone        String
+  deliveryStreet       String
+  deliveryNumber       String
+  deliveryDistrict     String
+  deliveryCity         String
+  deliveryState        String
+  deliveryZipCode      String
+  deliveryComplement   String?
+  deliveryReference    String?
 
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  acceptedAt           DateTime?
+  preparingAt          DateTime?
+  deliveryAt           DateTime?
+  deliveredAt          DateTime?
+  canceledAt           DateTime?
+
+  user                 User          @relation(fields: [userId], references: [id])
+  restaurant           Restaurant    @relation(fields: [restaurantId], references: [id])
+  items                OrderItem[]
+
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
 
   @@index([userId])
   @@index([restaurantId])
   @@index([status])
   @@index([createdAt])
+  @@index([userAddressId])
 }
 
 model OrderItem {
@@ -154,6 +254,9 @@ model OrderItem {
   order      Order    @relation(fields: [orderId], references: [id])
   menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
   selections OrderItemSelection[]
+
+  @@index([orderId])
+  @@index([menuItemId])
 }
 
 model OrderItemSelection {
@@ -163,6 +266,8 @@ model OrderItemSelection {
   price       Decimal? @db.Decimal(10, 2)
 
   orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
+
+  @@index([orderItemId])
 }
 
 enum Role {
