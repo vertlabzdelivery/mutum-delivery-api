@@ -28,6 +28,18 @@ export class RestaurantsController {
     return this.restaurantsService.findActive();
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get('available/by-address/:addressId')
+  findAvailableByAddress(
+    @Param('addressId', new ParseUUIDPipe()) addressId: string,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.restaurantsService.findAvailableByAddress(
+      addressId,
+      user.userId,
+    );
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.RESTAURANT)
   @Get('my/owned')

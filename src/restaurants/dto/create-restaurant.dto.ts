@@ -1,4 +1,9 @@
-import { IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsUUID,
+  MinLength,
+} from 'class-validator';
 
 export class CreateRestaurantDto {
   @IsString()
@@ -22,4 +27,8 @@ export class CreateRestaurantDto {
 
   @IsUUID()
   ownerId: string;
+
+  @IsOptional()
+  @IsUUID()
+  cityId?: string;
 }

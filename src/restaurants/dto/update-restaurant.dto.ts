@@ -1,4 +1,10 @@
-import { IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MinLength,
+} from 'class-validator';
 
 export class UpdateRestaurantDto {
   @IsOptional()
@@ -21,6 +27,10 @@ export class UpdateRestaurantDto {
   @IsOptional()
   @IsString()
   address?: string;
+
+  @IsOptional()
+  @IsUUID()
+  cityId?: string;
 
   @IsOptional()
   @IsBoolean()

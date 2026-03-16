@@ -3,6 +3,7 @@ import {
   IsArray,
   IsEnum,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -17,6 +18,7 @@ class CreateOrderItemSelectionDto {
   choiceName: string;
 
   @IsOptional()
+  @IsNumber()
   price?: number;
 }
 
@@ -39,6 +41,9 @@ export class CreateOrderDto {
   @IsUUID()
   restaurantId: string;
 
+  @IsUUID()
+  userAddressId: string;
+
   @IsEnum(PaymentMethod)
   paymentMethod: PaymentMethod;
 
@@ -51,28 +56,6 @@ export class CreateOrderDto {
 
   @IsString()
   deliveryPhone: string;
-
-  @IsString()
-  deliveryStreet: string;
-
-  @IsString()
-  deliveryNumber: string;
-
-  @IsString()
-  deliveryDistrict: string;
-
-  @IsString()
-  deliveryCity: string;
-
-  @IsString()
-  deliveryState: string;
-
-  @IsString()
-  deliveryZipCode: string;
-
-  @IsOptional()
-  @IsString()
-  deliveryComplement?: string;
 
   @IsArray()
   @ArrayMinSize(1)

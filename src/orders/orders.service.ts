@@ -17,6 +17,12 @@ export class OrdersService {
   async create(userId: string, dto: CreateOrderDto) {
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: dto.restaurantId },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        cityId: true,
+      },
     });
 
     if (!restaurant) {
@@ -25,6 +31,48 @@ export class OrdersService {
 
     if (!restaurant.isActive) {
       throw new BadRequestException('Restaurante inativo');
+    }
+
+    const address = await this.prisma.userAddress.findFirst({
+      where: {
+        id: dto.userAddressId,
+        userId,
+      },
+      include: {
+        city: {
+          include: {
+            state: true,
+          },
+        },
+        neighborhood: true,
+      },
+    });
+
+    if (!address) {
+      throw new NotFoundException('Endereço não encontrado');
+    }
+
+    if (restaurant.cityId && restaurant.cityId !== address.cityId) {
+      throw new BadRequestException(
+        'O restaurante não atende a cidade do endereço selecionado',
+      );
+    }
+
+    const deliveryZone = await this.prisma.restaurantDeliveryZone.findFirst({
+      where: {
+        restaurantId: dto.restaurantId,
+        neighborhoodId: address.neighborhoodId,
+        isActive: true,
+      },
+      include: {
+        neighborhood: true,
+      },
+    });
+
+    if (!deliveryZone) {
+      throw new BadRequestException(
+        'Este restaurante não atende o bairro do endereço selecionado',
+      );
     }
 
     const menuItemIds = dto.items.map((item) => item.menuItemId);
@@ -89,28 +137,33 @@ export class OrdersService {
       };
     });
 
-    const deliveryFee = new Prisma.Decimal(0);
+    const deliveryFee = new Prisma.Decimal(deliveryZone.deliveryFee);
     const total = subtotal.plus(deliveryFee);
 
     return this.prisma.order.create({
       data: {
         userId,
         restaurantId: dto.restaurantId,
+        userAddressId: dto.userAddressId,
+        neighborhoodName: address.neighborhood.name,
         paymentMethod: dto.paymentMethod,
         status: OrderStatus.PENDING,
         subtotal,
         deliveryFee,
         total,
         notes: dto.notes,
+
         deliveryName: dto.deliveryName,
         deliveryPhone: dto.deliveryPhone,
-        deliveryStreet: dto.deliveryStreet,
-        deliveryNumber: dto.deliveryNumber,
-        deliveryDistrict: dto.deliveryDistrict,
-        deliveryCity: dto.deliveryCity,
-        deliveryState: dto.deliveryState,
-        deliveryZipCode: dto.deliveryZipCode,
-        deliveryComplement: dto.deliveryComplement,
+        deliveryStreet: address.street,
+        deliveryNumber: address.number,
+        deliveryDistrict: address.neighborhood.name,
+        deliveryCity: address.city.name,
+        deliveryState: address.city.state.code,
+        deliveryZipCode: address.zipCode,
+        deliveryComplement: address.complement,
+        deliveryReference: address.reference,
+
         items: {
           create: orderItemsData,
         },
@@ -257,9 +310,18 @@ export class OrdersService {
     this.ensureCanManageRestaurant(order.restaurant.ownerId, currentUser);
     this.ensureValidStatusTransition(order.status, status);
 
+    const now = new Date();
+
     return this.prisma.order.update({
       where: { id },
-      data: { status },
+      data: {
+        status,
+        acceptedAt: status === OrderStatus.ACCEPTED ? now : undefined,
+        preparingAt: status === OrderStatus.PREPARING ? now : undefined,
+        deliveryAt: status === OrderStatus.DELIVERY ? now : undefined,
+        deliveredAt: status === OrderStatus.DELIVERED ? now : undefined,
+        canceledAt: status === OrderStatus.CANCELED ? now : undefined,
+      },
       include: {
         items: {
           include: {
