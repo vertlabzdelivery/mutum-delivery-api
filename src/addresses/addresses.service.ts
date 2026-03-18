@@ -75,11 +75,31 @@ export class AddressesService {
         },
         neighborhood: true,
       },
-      orderBy: [
-        { isDefault: 'desc' },
-        { createdAt: 'desc' },
-      ],
+      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
     });
+  }
+
+  async findMyDefaultAddress(currentUser: CurrentUserData) {
+    const address = await this.prisma.userAddress.findFirst({
+      where: {
+        userId: currentUser.userId,
+        isDefault: true,
+      },
+      include: {
+        city: {
+          include: {
+            state: true,
+          },
+        },
+        neighborhood: true,
+      },
+    });
+
+    if (!address) {
+      throw new NotFoundException('Nenhum endereço principal encontrado');
+    }
+
+    return address;
   }
 
   async findOne(id: string, currentUser: CurrentUserData) {
@@ -120,9 +140,13 @@ export class AddressesService {
     this.ensureAddressOwnership(existingAddress.userId, currentUser.userId);
 
     const nextCityId = dto.cityId ?? existingAddress.cityId;
-    const nextNeighborhoodId = dto.neighborhoodId ?? existingAddress.neighborhoodId;
+    const nextNeighborhoodId =
+      dto.neighborhoodId ?? existingAddress.neighborhoodId;
 
-    await this.ensureCityAndNeighborhoodAreValid(nextCityId, nextNeighborhoodId);
+    await this.ensureCityAndNeighborhoodAreValid(
+      nextCityId,
+      nextNeighborhoodId,
+    );
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.isDefault === true) {
@@ -180,19 +204,58 @@ export class AddressesService {
     this.ensureAddressOwnership(address.userId, currentUser.userId);
 
     if (!isDefault) {
-      return this.prisma.userAddress.update({
-        where: { id },
-        data: {
-          isDefault: false,
-        },
-        include: {
-          city: {
-            include: {
-              state: true,
+      if (!address.isDefault) {
+        return this.prisma.userAddress.findUnique({
+          where: { id },
+          include: {
+            city: {
+              include: {
+                state: true,
+              },
             },
+            neighborhood: true,
           },
-          neighborhood: true,
+        });
+      }
+
+      const otherAddress = await this.prisma.userAddress.findFirst({
+        where: {
+          userId: currentUser.userId,
+          id: { not: id },
         },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      });
+
+      if (!otherAddress) {
+        throw new BadRequestException(
+          'Você não pode remover o endereço principal sem ter outro endereço cadastrado',
+        );
+      }
+
+      return this.prisma.$transaction(async (tx) => {
+        await tx.userAddress.update({
+          where: { id },
+          data: {
+            isDefault: false,
+          },
+        });
+
+        return tx.userAddress.update({
+          where: { id: otherAddress.id },
+          data: {
+            isDefault: true,
+          },
+          include: {
+            city: {
+              include: {
+                state: true,
+              },
+            },
+            neighborhood: true,
+          },
+        });
       });
     }
 

@@ -35,6 +35,11 @@ export class AddressesController {
     return this.addressesService.findMyAddresses(user);
   }
 
+  @Get('my/default')
+  findMyDefaultAddress(@CurrentUser() user: CurrentUserData) {
+    return this.addressesService.findMyDefaultAddress(user);
+  }
+
   @Get(':id')
   findOne(
     @Param('id', new ParseUUIDPipe()) id: string,

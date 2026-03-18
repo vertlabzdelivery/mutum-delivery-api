@@ -9,11 +9,13 @@ import { OrdersModule } from './orders/orders.module';
 import { LocationsModule } from './locations/locations.module';
 import { AddressesModule } from './addresses/addresses.module';
 import { RestaurantDeliveryZonesModule } from './restaurant-delivery-zones/restaurant-delivery-zones.module';
+import { validateEnv } from './config/env.validation';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      validate: validateEnv,
     }),
     PrismaModule,
     AuthModule,

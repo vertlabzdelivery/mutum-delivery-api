@@ -1,9 +1,12 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { CurrentUserData } from '../common/interfaces/current-user.interface';
+import { RegisterRestaurantDto } from './dto/register-restaurant.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -12,6 +15,11 @@ export class AuthController {
   @Post('register')
   register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
+  }
+
+  @Post('register-restaurant')
+  registerRestaurant(@Body() dto: RegisterRestaurantDto) {
+    return this.authService.registerRestaurant(dto);
   }
 
   @Post('login')
@@ -26,7 +34,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Get('me')
-  me(@Req() req: any) {
-    return this.authService.me(req.user.userId);
+  me(@CurrentUser() user: CurrentUserData) {
+    return this.authService.me(user.userId);
   }
 }
