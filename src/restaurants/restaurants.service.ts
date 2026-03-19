@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { CurrentUserData } from '../common/interfaces/current-user.interface';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
+import { ReplaceOpeningHoursDto } from './dto/replace-opening-hours.dto';
 
 @Injectable()
 export class RestaurantsService {
@@ -33,7 +34,7 @@ export class RestaurantsService {
       await this.ensureCityExists(dto.cityId);
     }
 
-    return this.prisma.restaurant.create({
+    const restaurant = await this.prisma.restaurant.create({
       data: {
         name: dto.name.trim(),
         description: dto.description?.trim(),
@@ -44,25 +45,27 @@ export class RestaurantsService {
         ownerId: dto.ownerId,
         cityId: dto.cityId,
         minOrder:
-          dto.minOrder !== undefined
-            ? new Prisma.Decimal(dto.minOrder)
-            : undefined,
+          dto.minOrder !== undefined ? new Prisma.Decimal(dto.minOrder) : undefined,
       },
       include: this.restaurantInclude(),
     });
+
+    return this.serializeRestaurant(restaurant);
   }
 
   async findAll() {
-    return this.prisma.restaurant.findMany({
+    const restaurants = await this.prisma.restaurant.findMany({
       orderBy: {
         createdAt: 'desc',
       },
       include: this.restaurantInclude(),
     });
+
+    return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
   }
 
   async findActive() {
-    return this.prisma.restaurant.findMany({
+    const restaurants = await this.prisma.restaurant.findMany({
       where: {
         isActive: true,
       },
@@ -71,10 +74,12 @@ export class RestaurantsService {
       },
       include: this.restaurantInclude(false),
     });
+
+    return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
   }
 
   async findOwnedByUser(userId: string) {
-    return this.prisma.restaurant.findMany({
+    const restaurants = await this.prisma.restaurant.findMany({
       where: {
         ownerId: userId,
       },
@@ -82,6 +87,7 @@ export class RestaurantsService {
         createdAt: 'desc',
       },
       include: {
+        hours: { orderBy: [{ dayOfWeek: 'asc' }, { openTime: 'asc' }] },
         city: {
           include: {
             state: true,
@@ -92,6 +98,8 @@ export class RestaurantsService {
         },
       },
     });
+
+    return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
   }
 
   async findAvailableByAddress(addressId: string, userId: string) {
@@ -114,7 +122,7 @@ export class RestaurantsService {
       throw new NotFoundException('Endereço não encontrado');
     }
 
-    return this.prisma.restaurant.findMany({
+    const restaurants = await this.prisma.restaurant.findMany({
       where: {
         isActive: true,
         cityId: address.cityId,
@@ -145,10 +153,10 @@ export class RestaurantsService {
           },
         },
       },
-      orderBy: {
-        createdAt: 'desc',
-      },
+      orderBy: [{ createdAt: 'desc' }],
     });
+
+    return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
   }
 
   async findOne(id: string) {
@@ -181,7 +189,7 @@ export class RestaurantsService {
       throw new NotFoundException('Restaurante não encontrado');
     }
 
-    return restaurant;
+    return this.serializeRestaurant(restaurant);
   }
 
   async update(
@@ -197,7 +205,7 @@ export class RestaurantsService {
       await this.ensureCityExists(dto.cityId);
     }
 
-    return this.prisma.restaurant.update({
+    const updated = await this.prisma.restaurant.update({
       where: { id },
       data: {
         name: dto.name?.trim(),
@@ -208,13 +216,13 @@ export class RestaurantsService {
         address: dto.address?.trim(),
         cityId: dto.cityId,
         minOrder:
-          dto.minOrder !== undefined
-            ? new Prisma.Decimal(dto.minOrder)
-            : undefined,
+          dto.minOrder !== undefined ? new Prisma.Decimal(dto.minOrder) : undefined,
         isActive: dto.isActive,
       },
       include: this.restaurantInclude(),
     });
+
+    return this.serializeRestaurant(updated);
   }
 
   async updateStatus(
@@ -240,35 +248,26 @@ export class RestaurantsService {
     });
   }
 
-  private restaurantInclude(
-    includeOwnerContact = true,
-  ): Prisma.RestaurantInclude {
+  private restaurantInclude(includeOwnerContact = true): Prisma.RestaurantInclude {
     return {
       owner: {
-        select: includeOwnerContact
-          ? {
-              id: true,
-              name: true,
-              email: true,
-              phone: true,
-              role: true,
-            }
-          : {
-              id: true,
-              name: true,
-              phone: true,
-              role: true,
-            },
+        select: {
+          id: true,
+          name: true,
+          ...(includeOwnerContact ? { email: true, phone: true } : { phone: true }),
+          role: true,
+        },
       },
       city: {
         include: {
           state: true,
         },
       },
+      hours: {
+        orderBy: [{ dayOfWeek: 'asc' }, { openTime: 'asc' }],
+      },
       menuCategories: {
-        where: {
-          isActive: true,
-        },
+        where: { isActive: true },
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         select: {
           id: true,
@@ -278,6 +277,98 @@ export class RestaurantsService {
         },
       },
     };
+  }
+
+  private serializeRestaurant<T extends Record<string, any>>(restaurant: T) {
+    const openingStatus = this.getRestaurantOpeningStatus(restaurant.hours || []);
+
+    return {
+      ...restaurant,
+      isOpenNow: restaurant.isActive === false ? false : openingStatus.isOpen,
+      acceptsOrdersNow: restaurant.isActive === false ? false : openingStatus.isOpen,
+      openingStatusLabel:
+        restaurant.isActive === false ? 'Inativo' : openingStatus.statusLabel,
+      openingTodayLabel: openingStatus.todayLabel,
+    };
+  }
+
+  private getRestaurantOpeningStatus(
+    hours: Array<{ dayOfWeek: number; openTime: string; closeTime: string }>,
+  ) {
+    const normalized = (hours || [])
+      .map((item) => ({
+        dayOfWeek: Number(item.dayOfWeek),
+        openTime: String(item.openTime || '').slice(0, 5),
+        closeTime: String(item.closeTime || '').slice(0, 5),
+      }))
+      .filter(
+        (item) => Number.isInteger(item.dayOfWeek) && item.openTime && item.closeTime,
+      )
+      .sort(
+        (a, b) =>
+          a.dayOfWeek - b.dayOfWeek || a.openTime.localeCompare(b.openTime),
+      );
+
+    if (!normalized.length) {
+      return {
+        isOpen: true,
+        statusLabel: 'Horário não informado',
+        todayLabel: 'Horário não informado',
+      };
+    }
+
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const todayHours = normalized.filter((item) => item.dayOfWeek === dayOfWeek);
+
+    if (!todayHours.length) {
+      return {
+        isOpen: false,
+        statusLabel: 'Fechado hoje',
+        todayLabel: 'Hoje: fechado',
+      };
+    }
+
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    for (const slot of todayHours) {
+      const openMinutes = this.timeToMinutes(slot.openTime);
+      const closeMinutes = this.timeToMinutes(slot.closeTime);
+
+      if (openMinutes === null || closeMinutes === null) {
+        continue;
+      }
+
+      const isOpen =
+        closeMinutes >= openMinutes
+          ? currentMinutes >= openMinutes && currentMinutes < closeMinutes
+          : currentMinutes >= openMinutes || currentMinutes < closeMinutes;
+
+      if (isOpen) {
+        return {
+          isOpen: true,
+          statusLabel: `Aberto até ${slot.closeTime}`,
+          todayLabel: `Hoje: ${slot.openTime} às ${slot.closeTime}`,
+        };
+      }
+    }
+
+    const firstSlot = todayHours[0];
+    return {
+      isOpen: false,
+      statusLabel: `Fechado agora • Hoje ${firstSlot.openTime} às ${firstSlot.closeTime}`,
+      todayLabel: `Hoje: ${firstSlot.openTime} às ${firstSlot.closeTime}`,
+    };
+  }
+
+  private timeToMinutes(value: string) {
+    const [hour, minute] = String(value || '').split(':').map(Number);
+
+    if (Number.isNaN(hour) || Number.isNaN(minute)) {
+      return null;
+    }
+
+    return hour * 60 + minute;
   }
 
   private async ensureRestaurantExists(id: string) {
@@ -318,5 +409,40 @@ export class RestaurantsService {
         'Você não tem permissão para gerenciar este restaurante',
       );
     }
+  }
+
+  async findOpeningHours(id: string) {
+    await this.findOne(id);
+    return this.prisma.openingHour.findMany({
+      where: { restaurantId: id },
+      orderBy: [{ dayOfWeek: 'asc' }, { openTime: 'asc' }],
+    });
+  }
+
+  async replaceOpeningHours(id: string, dto: ReplaceOpeningHoursDto) {
+    const restaurant = await this.ensureRestaurantExists(id);
+    const hours = (dto.hours || []).map((item) => ({
+      restaurantId: id,
+      dayOfWeek: item.dayOfWeek,
+      openTime: item.openTime,
+      closeTime: item.closeTime,
+    }));
+
+    const operations: Prisma.PrismaPromise<any>[] = [
+      this.prisma.openingHour.deleteMany({ where: { restaurantId: id } }),
+    ];
+
+    if (hours.length) {
+      operations.push(this.prisma.openingHour.createMany({ data: hours }));
+    }
+
+    await this.prisma.$transaction(operations);
+
+    const updatedHours = await this.findOpeningHours(id);
+    return {
+      restaurantId: restaurant.id,
+      hours: updatedHours,
+      ...this.getRestaurantOpeningStatus(updatedHours),
+    };
   }
 }

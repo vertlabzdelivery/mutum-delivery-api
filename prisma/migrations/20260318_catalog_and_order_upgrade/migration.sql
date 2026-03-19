@@ -1,5 +1,5 @@
 -- Evolução de catálogo e pedidos
--- Corrigida para não recriar colunas já existentes na base inicial
+-- Execute com: npx prisma migrate dev --name catalog_and_order_upgrade
 
 CREATE TYPE "OptionGroupType" AS ENUM (
   'SIZE',
@@ -12,7 +12,8 @@ CREATE TYPE "OptionGroupType" AS ENUM (
 );
 
 ALTER TABLE "Restaurant"
-  ADD COLUMN "bannerUrl" TEXT;
+  ADD COLUMN "bannerUrl" TEXT,
+  ADD COLUMN "minOrder" DECIMAL(10,2);
 
 CREATE TABLE "MenuCategory" (
   "id" TEXT NOT NULL,

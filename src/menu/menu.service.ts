@@ -122,9 +122,7 @@ export class MenuService {
       );
     }
 
-    await this.prisma.menuCategory.delete({
-      where: { id },
-    });
+    await this.prisma.menuCategory.delete({ where: { id } });
 
     return {
       message: 'Categoria removida com sucesso',
@@ -136,10 +134,7 @@ export class MenuService {
     this.ensureCanManageRestaurant(restaurant.ownerId, currentUser);
 
     if (dto.categoryId) {
-      await this.ensureCategoryBelongsToRestaurant(
-        dto.categoryId,
-        dto.restaurantId,
-      );
+      await this.ensureCategoryBelongsToRestaurant(dto.categoryId, dto.restaurantId);
     }
 
     this.validateOptions(dto.options);
@@ -199,9 +194,7 @@ export class MenuService {
           include: {
             neighborhood: true,
           },
-          orderBy: {
-            deliveryFee: 'asc',
-          },
+          orderBy: { deliveryFee: 'asc' },
         },
       },
     });
@@ -237,9 +230,7 @@ export class MenuService {
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     });
 
-    const normalizedCategories: Array<
-      (typeof categories)[number] & { itemCount: number }
-    > = categories.map((category) => ({
+    const normalizedCategories: Array<(typeof categories)[number] & { itemCount: number }> = categories.map((category) => ({
       ...category,
       itemCount: category.menuItems.length,
     }));
@@ -301,10 +292,7 @@ export class MenuService {
     this.ensureCanManageRestaurant(item.restaurant.ownerId, currentUser);
 
     if (dto.categoryId) {
-      await this.ensureCategoryBelongsToRestaurant(
-        dto.categoryId,
-        item.restaurantId,
-      );
+      await this.ensureCategoryBelongsToRestaurant(dto.categoryId, item.restaurantId);
     }
 
     this.validateOptions(dto.options);
@@ -419,20 +407,18 @@ export class MenuService {
       isActive: option.isActive ?? true,
       choices: option.choices?.length
         ? {
-            create: option.choices.map(
-              (choice: CreateMenuItemChoiceDto, choiceIndex: number) => ({
-                name: choice.name.trim(),
-                description: choice.description?.trim(),
-                price:
-                  choice.price !== undefined
-                    ? new Prisma.Decimal(choice.price)
-                    : null,
-                imageUrl: choice.imageUrl?.trim(),
-                sortOrder: choice.sortOrder ?? choiceIndex,
-                isActive: choice.isActive ?? true,
-                isDefault: choice.isDefault ?? false,
-              }),
-            ),
+            create: option.choices.map((choice: CreateMenuItemChoiceDto, choiceIndex: number) => ({
+              name: choice.name.trim(),
+              description: choice.description?.trim(),
+              price:
+                choice.price !== undefined
+                  ? new Prisma.Decimal(choice.price)
+                  : null,
+              imageUrl: choice.imageUrl?.trim(),
+              sortOrder: choice.sortOrder ?? choiceIndex,
+              isActive: choice.isActive ?? true,
+              isDefault: choice.isDefault ?? false,
+            })),
           }
         : undefined,
     }));
@@ -544,10 +530,7 @@ export class MenuService {
     return item;
   }
 
-  private ensureCanManageRestaurant(
-    ownerId: string,
-    currentUser: CurrentUserData,
-  ) {
+  private ensureCanManageRestaurant(ownerId: string, currentUser: CurrentUserData) {
     const isAdmin = currentUser.role === Role.ADMIN;
     const isOwner = ownerId === currentUser.userId;
 

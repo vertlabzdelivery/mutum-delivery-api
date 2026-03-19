@@ -8,6 +8,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { ReplaceOpeningHoursDto } from './dto/replace-opening-hours.dto';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -55,6 +56,24 @@ export class RestaurantsController {
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.restaurantsService.findOne(id);
+  }
+
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.RESTAURANT)
+  @Get(':id/opening-hours')
+  findOpeningHours(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.restaurantsService.findOpeningHours(id);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.RESTAURANT)
+  @Patch(':id/opening-hours')
+  replaceOpeningHours(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: ReplaceOpeningHoursDto,
+  ) {
+    return this.restaurantsService.replaceOpeningHours(id, dto);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
