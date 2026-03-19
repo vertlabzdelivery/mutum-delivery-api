@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CurrentUserData } from '../common/interfaces/current-user.interface';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
@@ -35,30 +35,20 @@ export class RestaurantsService {
 
     return this.prisma.restaurant.create({
       data: {
-        name: dto.name,
-        description: dto.description,
-        logoUrl: dto.logoUrl,
-        phone: dto.phone,
-        address: dto.address,
+        name: dto.name.trim(),
+        description: dto.description?.trim(),
+        logoUrl: dto.logoUrl?.trim(),
+        bannerUrl: dto.bannerUrl?.trim(),
+        phone: dto.phone?.trim(),
+        address: dto.address.trim(),
         ownerId: dto.ownerId,
         cityId: dto.cityId,
+        minOrder:
+          dto.minOrder !== undefined
+            ? new Prisma.Decimal(dto.minOrder)
+            : undefined,
       },
-      include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-            role: true,
-          },
-        },
-        city: {
-          include: {
-            state: true,
-          },
-        },
-      },
+      include: this.restaurantInclude(),
     });
   }
 
@@ -67,22 +57,7 @@ export class RestaurantsService {
       orderBy: {
         createdAt: 'desc',
       },
-      include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-            role: true,
-          },
-        },
-        city: {
-          include: {
-            state: true,
-          },
-        },
-      },
+      include: this.restaurantInclude(),
     });
   }
 
@@ -94,20 +69,7 @@ export class RestaurantsService {
       orderBy: {
         createdAt: 'desc',
       },
-      include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            role: true,
-          },
-        },
-        city: {
-          include: {
-            state: true,
-          },
-        },
-      },
+      include: this.restaurantInclude(false),
     });
   }
 
@@ -124,6 +86,9 @@ export class RestaurantsService {
           include: {
             state: true,
           },
+        },
+        menuCategories: {
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
       },
     });
@@ -161,18 +126,7 @@ export class RestaurantsService {
         },
       },
       include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-          },
-        },
-        city: {
-          include: {
-            state: true,
-          },
-        },
+        ...this.restaurantInclude(false),
         deliveryZones: {
           where: {
             neighborhoodId: address.neighborhoodId,
@@ -201,20 +155,7 @@ export class RestaurantsService {
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id },
       include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-            role: true,
-          },
-        },
-        city: {
-          include: {
-            state: true,
-          },
-        },
+        ...this.restaurantInclude(),
         deliveryZones: {
           include: {
             neighborhood: {
@@ -259,30 +200,20 @@ export class RestaurantsService {
     return this.prisma.restaurant.update({
       where: { id },
       data: {
-        name: dto.name,
-        description: dto.description,
-        logoUrl: dto.logoUrl,
-        phone: dto.phone,
-        address: dto.address,
+        name: dto.name?.trim(),
+        description: dto.description?.trim(),
+        logoUrl: dto.logoUrl?.trim(),
+        bannerUrl: dto.bannerUrl?.trim(),
+        phone: dto.phone?.trim(),
+        address: dto.address?.trim(),
         cityId: dto.cityId,
+        minOrder:
+          dto.minOrder !== undefined
+            ? new Prisma.Decimal(dto.minOrder)
+            : undefined,
         isActive: dto.isActive,
       },
-      include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-            role: true,
-          },
-        },
-        city: {
-          include: {
-            state: true,
-          },
-        },
-      },
+      include: this.restaurantInclude(),
     });
   }
 
@@ -307,6 +238,46 @@ export class RestaurantsService {
         updatedAt: true,
       },
     });
+  }
+
+  private restaurantInclude(
+    includeOwnerContact = true,
+  ): Prisma.RestaurantInclude {
+    return {
+      owner: {
+        select: includeOwnerContact
+          ? {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+              role: true,
+            }
+          : {
+              id: true,
+              name: true,
+              phone: true,
+              role: true,
+            },
+      },
+      city: {
+        include: {
+          state: true,
+        },
+      },
+      menuCategories: {
+        where: {
+          isActive: true,
+        },
+        orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        select: {
+          id: true,
+          name: true,
+          sortOrder: true,
+          isActive: true,
+        },
+      },
+    };
   }
 
   private async ensureRestaurantExists(id: string) {

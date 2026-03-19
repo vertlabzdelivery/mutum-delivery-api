@@ -1,8 +1,97 @@
-import { IsBoolean, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  Min,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { OptionGroupType } from '@prisma/client';
+
+class CreateMenuItemChoiceDto {
+  @IsString()
+  name: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  price?: number;
+
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
+
+  @IsOptional()
+  @IsInt()
+  sortOrder?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isDefault?: boolean;
+}
+
+class CreateMenuItemOptionDto {
+  @IsString()
+  name: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsEnum(OptionGroupType)
+  optionType?: OptionGroupType;
+
+  @IsOptional()
+  @IsBoolean()
+  required?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  minSelect?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxSelect?: number;
+
+  @IsOptional()
+  @IsInt()
+  sortOrder?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateMenuItemChoiceDto)
+  choices?: CreateMenuItemChoiceDto[];
+}
 
 export class CreateMenuItemDto {
   @IsUUID()
   restaurantId: string;
+
+  @IsOptional()
+  @IsUUID()
+  categoryId?: string;
 
   @IsString()
   name: string;
@@ -22,4 +111,34 @@ export class CreateMenuItemDto {
   @IsOptional()
   @IsBoolean()
   isAvailable?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  sortOrder?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isFeatured?: boolean;
+
+  @IsOptional()
+  @IsString()
+  promotionalText?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  allowsItemNotes?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(999)
+  maxPerOrder?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateMenuItemOptionDto)
+  options?: CreateMenuItemOptionDto[];
 }
+
+export { CreateMenuItemOptionDto, CreateMenuItemChoiceDto };

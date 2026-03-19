@@ -23,11 +23,14 @@ export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @UseGuards(JwtAuthGuard)
+  @Post('quote')
+  quote(@CurrentUser() user: CurrentUserData, @Body() dto: CreateOrderDto) {
+    return this.ordersService.quote(user.userId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post()
-  create(
-    @CurrentUser() user: CurrentUserData,
-    @Body() dto: CreateOrderDto,
-  ) {
+  create(@CurrentUser() user: CurrentUserData, @Body() dto: CreateOrderDto) {
     return this.ordersService.create(user.userId, dto);
   }
 
@@ -64,6 +67,6 @@ export class OrdersController {
     @Body() dto: UpdateOrderStatusDto,
     @CurrentUser() user: CurrentUserData,
   ) {
-    return this.ordersService.updateStatus(id, dto.status, user);
+    return this.ordersService.updateStatus(id, dto.status, user, dto.note);
   }
 }

@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { OrderStatus, Prisma, Role } from '@prisma/client';
+import { OrderStatus, PaymentMethod, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CurrentUserData } from '../common/interfaces/current-user.interface';
 import { ORDER_STATUS_FLOW } from './constants/order-status-flow';
@@ -14,14 +14,192 @@ import { CreateOrderDto } from './dto/create-order.dto';
 export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async quote(userId: string, dto: CreateOrderDto) {
+    const draft = await this.buildOrderDraft(userId, dto);
+
+    return {
+      restaurant: draft.restaurant,
+      address: draft.addressSummary,
+      deliveryZone: draft.deliveryZoneSummary,
+      paymentMethod: dto.paymentMethod,
+      cashChangeFor: dto.cashChangeFor ?? null,
+      items: draft.orderItemsPreview,
+      subtotal: Number(draft.subtotal),
+      deliveryFee: Number(draft.deliveryFee),
+      total: Number(draft.total),
+      notes: dto.notes ?? null,
+    };
+  }
+
   async create(userId: string, dto: CreateOrderDto) {
+    const draft = await this.buildOrderDraft(userId, dto);
+
+    return this.prisma.order.create({
+      data: {
+        userId,
+        restaurantId: dto.restaurantId,
+        userAddressId: dto.userAddressId,
+        neighborhoodName: draft.address.neighborhood.name,
+        paymentMethod: dto.paymentMethod,
+        status: OrderStatus.PENDING,
+        subtotal: draft.subtotal,
+        deliveryFee: draft.deliveryFee,
+        total: draft.total,
+        notes: dto.notes?.trim(),
+        cashChangeFor:
+          dto.cashChangeFor !== undefined
+            ? new Prisma.Decimal(dto.cashChangeFor)
+            : null,
+
+        deliveryName: dto.deliveryName.trim(),
+        deliveryPhone: dto.deliveryPhone.trim(),
+        deliveryStreet: draft.address.street,
+        deliveryNumber: draft.address.number,
+        deliveryDistrict: draft.address.neighborhood.name,
+        deliveryCity: draft.address.city.name,
+        deliveryState: draft.address.city.state.code,
+        deliveryZipCode: draft.address.zipCode,
+        deliveryComplement: draft.address.complement,
+        deliveryReference: draft.address.reference,
+
+        items: {
+          create: draft.orderItemsCreateData,
+        },
+        statusHistory: {
+          create: {
+            fromStatus: null,
+            toStatus: OrderStatus.PENDING,
+            changedByUserId: userId,
+            note: 'Pedido criado',
+          },
+        },
+      },
+      include: this.orderInclude(),
+    });
+  }
+
+  async findMyOrders(userId: string) {
+    return this.prisma.order.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      include: this.orderInclude(),
+    });
+  }
+
+  async findRestaurantOrders(
+    restaurantId: string,
+    currentUser: CurrentUserData,
+  ) {
     const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: dto.restaurantId },
+      where: { id: restaurantId },
       select: {
         id: true,
-        name: true,
-        isActive: true,
-        cityId: true,
+        ownerId: true,
+      },
+    });
+
+    if (!restaurant) {
+      throw new NotFoundException('Restaurante não encontrado');
+    }
+
+    this.ensureCanManageRestaurant(restaurant.ownerId, currentUser);
+
+    return this.prisma.order.findMany({
+      where: { restaurantId },
+      orderBy: { createdAt: 'desc' },
+      include: this.orderInclude(true),
+    });
+  }
+
+  async findOne(id: string, currentUser: CurrentUserData) {
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: {
+        ...this.orderInclude(true),
+        restaurant: {
+          select: {
+            id: true,
+            name: true,
+            ownerId: true,
+            logoUrl: true,
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Pedido não encontrado');
+    }
+
+    const isAdmin = currentUser.role === Role.ADMIN;
+    const isOwnerUser = order.userId === currentUser.userId;
+    const isRestaurantOwner = order.restaurant.ownerId === currentUser.userId;
+
+    if (!isAdmin && !isOwnerUser && !isRestaurantOwner) {
+      throw new ForbiddenException('Você não tem acesso a este pedido');
+    }
+
+    return order;
+  }
+
+  async updateStatus(
+    id: string,
+    status: OrderStatus,
+    currentUser: CurrentUserData,
+    note?: string,
+  ) {
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: {
+        restaurant: {
+          select: {
+            id: true,
+            ownerId: true,
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Pedido não encontrado');
+    }
+
+    this.ensureCanManageRestaurant(order.restaurant.ownerId, currentUser);
+    this.ensureValidStatusTransition(order.status, status);
+
+    const now = new Date();
+
+    return this.prisma.order.update({
+      where: { id },
+      data: {
+        status,
+        acceptedAt: status === OrderStatus.ACCEPTED ? now : undefined,
+        preparingAt: status === OrderStatus.PREPARING ? now : undefined,
+        deliveryAt: status === OrderStatus.DELIVERY ? now : undefined,
+        deliveredAt: status === OrderStatus.DELIVERED ? now : undefined,
+        canceledAt: status === OrderStatus.CANCELED ? now : undefined,
+        statusHistory: {
+          create: {
+            fromStatus: order.status,
+            toStatus: status,
+            changedByUserId: currentUser.userId,
+            note: note?.trim(),
+          },
+        },
+      },
+      include: this.orderInclude(true),
+    });
+  }
+
+  private async buildOrderDraft(userId: string, dto: CreateOrderDto) {
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: dto.restaurantId },
+      include: {
+        city: {
+          include: {
+            state: true,
+          },
+        },
       },
     });
 
@@ -75,16 +253,29 @@ export class OrdersService {
       );
     }
 
-    const menuItemIds = dto.items.map((item) => item.menuItemId);
+    const menuItemIds = [...new Set(dto.items.map((item) => item.menuItemId))];
 
     const menuItems = await this.prisma.menuItem.findMany({
       where: {
         id: { in: menuItemIds },
         restaurantId: dto.restaurantId,
       },
+      include: {
+        category: true,
+        options: {
+          where: { isActive: true },
+          include: {
+            choices: {
+              where: { isActive: true },
+              orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+            },
+          },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
+      },
     });
 
-    if (menuItems.length !== dto.items.length) {
+    if (menuItems.length !== menuItemIds.length) {
       throw new BadRequestException(
         'Um ou mais itens do pedido não pertencem ao restaurante',
       );
@@ -100,39 +291,132 @@ export class OrdersService {
 
     let subtotal = new Prisma.Decimal(0);
 
-    const orderItemsData = dto.items.map((item) => {
-      const menuItem = menuItems.find((menu) => menu.id === item.menuItemId);
+    const orderItemsCreateData = dto.items.map((itemDto) => {
+      const menuItem = menuItems.find((menu) => menu.id === itemDto.menuItemId);
 
       if (!menuItem) {
         throw new BadRequestException('Item do cardápio não encontrado');
       }
 
-      const selectionsTotal = (item.selections ?? []).reduce(
-        (acc, selection) => {
-          return acc.plus(new Prisma.Decimal(selection.price ?? 0));
-        },
+      if (
+        menuItem.maxPerOrder !== null &&
+        menuItem.maxPerOrder !== undefined &&
+        itemDto.quantity > menuItem.maxPerOrder
+      ) {
+        throw new BadRequestException(
+          `O item "${menuItem.name}" aceita no máximo ${menuItem.maxPerOrder} unidade(s) por pedido`,
+        );
+      }
+
+      if (itemDto.notes && !menuItem.allowsItemNotes) {
+        throw new BadRequestException(
+          `O item "${menuItem.name}" não aceita observações personalizadas`,
+        );
+      }
+
+      const selectedChoicePairs = itemDto.selectedChoices ?? [];
+      const duplicateCheck = new Set<string>();
+
+      for (const pair of selectedChoicePairs) {
+        const key = `${pair.optionId}:${pair.choiceId}`;
+        if (duplicateCheck.has(key)) {
+          throw new BadRequestException(
+            `Seleção duplicada encontrada no item "${menuItem.name}"`,
+          );
+        }
+        duplicateCheck.add(key);
+      }
+
+      const validOptionIds = new Set(menuItem.options.map((option) => option.id));
+
+      for (const pair of selectedChoicePairs) {
+        if (!validOptionIds.has(pair.optionId)) {
+          throw new BadRequestException(
+            `Uma seleção enviada não pertence ao item "${menuItem.name}"`,
+          );
+        }
+      }
+
+      const selectionsForCreate: Array<{
+        optionId: string;
+        optionName: string;
+        choiceId: string;
+        choiceName: string;
+        price: Prisma.Decimal | null;
+      }> = [];
+
+      for (const option of menuItem.options) {
+        const selectedForOption = selectedChoicePairs.filter(
+          (pair) => pair.optionId === option.id,
+        );
+
+        const minSelect = option.minSelect ?? (option.required ? 1 : 0);
+        const maxSelect = option.maxSelect ?? null;
+        const selectedCount = selectedForOption.length;
+
+        if (option.required && selectedCount < minSelect) {
+          throw new BadRequestException(
+            `O grupo "${option.name}" do item "${menuItem.name}" exige ao menos ${minSelect} seleção(ões)`,
+          );
+        }
+
+        if (selectedCount < minSelect) {
+          throw new BadRequestException(
+            `O grupo "${option.name}" do item "${menuItem.name}" exige no mínimo ${minSelect} seleção(ões)`,
+          );
+        }
+
+        if (maxSelect !== null && selectedCount > maxSelect) {
+          throw new BadRequestException(
+            `O grupo "${option.name}" do item "${menuItem.name}" permite no máximo ${maxSelect} seleção(ões)`,
+          );
+        }
+
+        for (const pair of selectedForOption) {
+          const choice = option.choices.find((optionChoice) => optionChoice.id === pair.choiceId);
+
+          if (!choice) {
+            throw new BadRequestException(
+              `A escolha informada não pertence ao grupo "${option.name}" do item "${menuItem.name}"`,
+            );
+          }
+
+          selectionsForCreate.push({
+            optionId: option.id,
+            optionName: option.name,
+            choiceId: choice.id,
+            choiceName: choice.name,
+            price:
+              choice.price !== null && choice.price !== undefined
+                ? new Prisma.Decimal(choice.price)
+                : null,
+          });
+        }
+      }
+
+      const selectionsTotal = selectionsForCreate.reduce(
+        (acc, selection) => acc.plus(selection.price ?? 0),
         new Prisma.Decimal(0),
       );
 
-      const unitPrice = new Prisma.Decimal(menuItem.price).plus(selectionsTotal);
-      const totalPrice = unitPrice.mul(item.quantity);
+      const baseUnitPrice = new Prisma.Decimal(menuItem.price);
+      const unitPrice = baseUnitPrice.plus(selectionsTotal);
+      const totalPrice = unitPrice.mul(itemDto.quantity);
 
       subtotal = subtotal.plus(totalPrice);
 
       return {
         menuItemId: menuItem.id,
         name: menuItem.name,
-        quantity: item.quantity,
+        description: menuItem.description,
+        imageUrl: menuItem.imageUrl,
+        quantity: itemDto.quantity,
+        baseUnitPrice,
         unitPrice,
         totalPrice,
+        notes: itemDto.notes?.trim(),
         selections: {
-          create: (item.selections ?? []).map((selection) => ({
-            choiceName: selection.choiceName,
-            price:
-              selection.price !== undefined
-                ? new Prisma.Decimal(selection.price)
-                : null,
-          })),
+          create: selectionsForCreate,
         },
       };
     });
@@ -140,209 +424,115 @@ export class OrdersService {
     const deliveryFee = new Prisma.Decimal(deliveryZone.deliveryFee);
     const total = subtotal.plus(deliveryFee);
 
-    return this.prisma.order.create({
-      data: {
-        userId,
-        restaurantId: dto.restaurantId,
-        userAddressId: dto.userAddressId,
-        neighborhoodName: address.neighborhood.name,
-        paymentMethod: dto.paymentMethod,
-        status: OrderStatus.PENDING,
-        subtotal,
-        deliveryFee,
-        total,
-        notes: dto.notes,
-
-        deliveryName: dto.deliveryName,
-        deliveryPhone: dto.deliveryPhone,
-        deliveryStreet: address.street,
-        deliveryNumber: address.number,
-        deliveryDistrict: address.neighborhood.name,
-        deliveryCity: address.city.name,
-        deliveryState: address.city.state.code,
-        deliveryZipCode: address.zipCode,
-        deliveryComplement: address.complement,
-        deliveryReference: address.reference,
-
-        items: {
-          create: orderItemsData,
-        },
-      },
-      include: {
-        items: {
-          include: {
-            selections: true,
-          },
-        },
-        restaurant: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-          },
-        },
-      },
-    });
-  }
-
-  async findMyOrders(userId: string) {
-    return this.prisma.order.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      include: {
-        restaurant: {
-          select: {
-            id: true,
-            name: true,
-            logoUrl: true,
-          },
-        },
-        items: {
-          include: {
-            selections: true,
-          },
-        },
-      },
-    });
-  }
-
-  async findRestaurantOrders(
-    restaurantId: string,
-    currentUser: CurrentUserData,
-  ) {
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: restaurantId },
-      select: {
-        id: true,
-        ownerId: true,
-      },
-    });
-
-    if (!restaurant) {
-      throw new NotFoundException('Restaurante não encontrado');
+    if (restaurant.minOrder && subtotal.lessThan(restaurant.minOrder)) {
+      throw new BadRequestException(
+        `O pedido mínimo deste restaurante é R$ ${restaurant.minOrder.toString()}`,
+      );
     }
 
-    this.ensureCanManageRestaurant(restaurant.ownerId, currentUser);
+    if (dto.paymentMethod === PaymentMethod.CASH) {
+      if (
+        dto.cashChangeFor !== undefined &&
+        new Prisma.Decimal(dto.cashChangeFor).lessThan(total)
+      ) {
+        throw new BadRequestException(
+          'O valor informado para troco precisa ser maior ou igual ao total do pedido',
+        );
+      }
+    }
 
-    return this.prisma.order.findMany({
-      where: { restaurantId },
-      orderBy: { createdAt: 'desc' },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-          },
-        },
-        items: {
-          include: {
-            selections: true,
-          },
-        },
+    if (dto.paymentMethod !== PaymentMethod.CASH && dto.cashChangeFor !== undefined) {
+      throw new BadRequestException(
+        'O campo cashChangeFor só pode ser usado quando o pagamento for em dinheiro',
+      );
+    }
+
+    return {
+      restaurant,
+      address,
+      deliveryZone,
+      subtotal,
+      deliveryFee,
+      total,
+      orderItemsCreateData,
+      orderItemsPreview: orderItemsCreateData.map((item) => ({
+        menuItemId: item.menuItemId,
+        name: item.name,
+        description: item.description,
+        imageUrl: item.imageUrl,
+        quantity: item.quantity,
+        baseUnitPrice: Number(item.baseUnitPrice),
+        unitPrice: Number(item.unitPrice),
+        totalPrice: Number(item.totalPrice),
+        notes: item.notes ?? null,
+        selections: item.selections.create.map((selection) => ({
+          optionId: selection.optionId,
+          optionName: selection.optionName,
+          choiceId: selection.choiceId,
+          choiceName: selection.choiceName,
+          price: selection.price !== null ? Number(selection.price) : 0,
+        })),
+      })),
+      addressSummary: {
+        label: address.label,
+        street: address.street,
+        number: address.number,
+        complement: address.complement,
+        reference: address.reference,
+        neighborhood: address.neighborhood.name,
+        city: address.city.name,
+        state: address.city.state.code,
+        zipCode: address.zipCode,
       },
-    });
+      deliveryZoneSummary: {
+        neighborhood: deliveryZone.neighborhood.name,
+        deliveryFee: Number(deliveryFee),
+        minTime: deliveryZone.minTime,
+        maxTime: deliveryZone.maxTime,
+      },
+    };
   }
 
-  async findOne(id: string, currentUser: CurrentUserData) {
-    const order = await this.prisma.order.findUnique({
-      where: { id },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            phone: true,
-          },
-        },
-        restaurant: {
-          select: {
-            id: true,
-            name: true,
-            ownerId: true,
-          },
-        },
-        items: {
-          include: {
-            selections: true,
-          },
+  private orderInclude(includeUser = false) {
+    return {
+      ...(includeUser
+        ? {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                phone: true,
+              },
+            },
+          }
+        : {}),
+      restaurant: {
+        select: {
+          id: true,
+          name: true,
+          logoUrl: true,
+          phone: true,
         },
       },
-    });
-
-    if (!order) {
-      throw new NotFoundException('Pedido não encontrado');
-    }
-
-    const isAdmin = currentUser.role === Role.ADMIN;
-    const isOwnerUser = order.userId === currentUser.userId;
-    const isRestaurantOwner = order.restaurant.ownerId === currentUser.userId;
-
-    if (!isAdmin && !isOwnerUser && !isRestaurantOwner) {
-      throw new ForbiddenException('Você não tem acesso a este pedido');
-    }
-
-    return order;
-  }
-
-  async updateStatus(
-    id: string,
-    status: OrderStatus,
-    currentUser: CurrentUserData,
-  ) {
-    const order = await this.prisma.order.findUnique({
-      where: { id },
-      include: {
-        restaurant: {
-          select: {
-            id: true,
-            ownerId: true,
-          },
+      items: {
+        include: {
+          selections: true,
         },
       },
-    });
-
-    if (!order) {
-      throw new NotFoundException('Pedido não encontrado');
-    }
-
-    this.ensureCanManageRestaurant(order.restaurant.ownerId, currentUser);
-    this.ensureValidStatusTransition(order.status, status);
-
-    const now = new Date();
-
-    return this.prisma.order.update({
-      where: { id },
-      data: {
-        status,
-        acceptedAt: status === OrderStatus.ACCEPTED ? now : undefined,
-        preparingAt: status === OrderStatus.PREPARING ? now : undefined,
-        deliveryAt: status === OrderStatus.DELIVERY ? now : undefined,
-        deliveredAt: status === OrderStatus.DELIVERED ? now : undefined,
-        canceledAt: status === OrderStatus.CANCELED ? now : undefined,
+      statusHistory: {
+        include: {
+          changedByUser: {
+            select: {
+              id: true,
+              name: true,
+              role: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
       },
-      include: {
-        items: {
-          include: {
-            selections: true,
-          },
-        },
-        user: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-          },
-        },
-        restaurant: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-      },
-    });
+    } as const;
   }
 
   private ensureCanManageRestaurant(

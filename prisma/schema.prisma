@@ -15,9 +15,10 @@ model User {
   phone        String?
   role         Role     @default(USER)
 
-  addresses    UserAddress[]
-  orders       Order[]
-  restaurants  Restaurant[]
+  addresses       UserAddress[]
+  orders          Order[]
+  restaurants     Restaurant[]
+  orderStatusLogs OrderStatusHistory[]
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -97,6 +98,7 @@ model Restaurant {
   name          String
   description   String?
   logoUrl       String?
+  bannerUrl     String?
   phone         String?
   address       String
   ownerId       String
@@ -107,10 +109,11 @@ model Restaurant {
   owner         User     @relation(fields: [ownerId], references: [id])
   city          City?    @relation(fields: [cityId], references: [id])
 
-  menuItems     MenuItem[]
-  orders        Order[]
-  hours         OpeningHour[]
-  deliveryZones RestaurantDeliveryZone[]
+  menuCategories MenuCategory[]
+  menuItems      MenuItem[]
+  orders         Order[]
+  hours          OpeningHour[]
+  deliveryZones  RestaurantDeliveryZone[]
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -153,49 +156,99 @@ model RestaurantDeliveryZone {
   @@index([isActive])
 }
 
-model MenuItem {
+model MenuCategory {
   id           String   @id @default(uuid())
   restaurantId String
   name         String
   description  String?
-  price        Decimal  @db.Decimal(10, 2)
   imageUrl     String?
-  isAvailable  Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  isActive     Boolean  @default(true)
 
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
-  options      MenuItemOption[]
-  orderItems   OrderItem[]
+  menuItems    MenuItem[]
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  @@unique([restaurantId, name])
   @@index([restaurantId])
+  @@index([sortOrder])
+  @@index([isActive])
+}
+
+model MenuItem {
+  id               String   @id @default(uuid())
+  restaurantId     String
+  categoryId       String?
+  name             String
+  description      String?
+  price            Decimal  @db.Decimal(10, 2)
+  imageUrl         String?
+  isAvailable      Boolean  @default(true)
+  sortOrder        Int      @default(0)
+  isFeatured       Boolean  @default(false)
+  promotionalText  String?
+  allowsItemNotes  Boolean  @default(true)
+  maxPerOrder      Int?
+
+  restaurant       Restaurant    @relation(fields: [restaurantId], references: [id])
+  category         MenuCategory? @relation(fields: [categoryId], references: [id])
+  options          MenuItemOption[]
+  orderItems       OrderItem[]
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([restaurantId])
+  @@index([categoryId])
   @@index([isAvailable])
+  @@index([sortOrder])
+  @@index([isFeatured])
 }
 
 model MenuItemOption {
-  id         String @id @default(uuid())
-  menuItemId String
-  name       String
-  required   Boolean @default(false)
-  minSelect  Int?
-  maxSelect  Int?
+  id          String         @id @default(uuid())
+  menuItemId  String
+  name        String
+  description String?
+  optionType  OptionGroupType @default(ADDITION)
+  required    Boolean        @default(false)
+  minSelect   Int?
+  maxSelect   Int?
+  sortOrder   Int            @default(0)
+  isActive    Boolean        @default(true)
 
-  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
-  choices    MenuItemChoice[]
+  menuItem    MenuItem         @relation(fields: [menuItemId], references: [id])
+  choices     MenuItemChoice[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([menuItemId])
+  @@index([sortOrder])
+  @@index([isActive])
 }
 
 model MenuItemChoice {
-  id       String   @id @default(uuid())
-  optionId String
-  name     String
-  price    Decimal? @db.Decimal(10, 2)
+  id          String   @id @default(uuid())
+  optionId     String
+  name         String
+  description  String?
+  price        Decimal? @db.Decimal(10, 2)
+  imageUrl     String?
+  sortOrder    Int      @default(0)
+  isActive     Boolean  @default(true)
+  isDefault    Boolean  @default(false)
 
-  option   MenuItemOption @relation(fields: [optionId], references: [id])
+  option       MenuItemOption @relation(fields: [optionId], references: [id])
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([optionId])
+  @@index([sortOrder])
+  @@index([isActive])
 }
 
 model Order {
@@ -210,6 +263,7 @@ model Order {
   deliveryFee          Decimal       @db.Decimal(10, 2)
   total                Decimal       @db.Decimal(10, 2)
   notes                String?
+  cashChangeFor        Decimal?      @db.Decimal(10, 2)
 
   deliveryName         String
   deliveryPhone        String
@@ -231,6 +285,7 @@ model Order {
   user                 User          @relation(fields: [userId], references: [id])
   restaurant           Restaurant    @relation(fields: [restaurantId], references: [id])
   items                OrderItem[]
+  statusHistory        OrderStatusHistory[]
 
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
@@ -243,17 +298,24 @@ model Order {
 }
 
 model OrderItem {
-  id         String   @id @default(uuid())
-  orderId    String
-  menuItemId String
-  name       String
-  quantity   Int
-  unitPrice  Decimal  @db.Decimal(10, 2)
-  totalPrice Decimal  @db.Decimal(10, 2)
+  id                  String   @id @default(uuid())
+  orderId             String
+  menuItemId          String
+  name                String
+  description         String?
+  imageUrl            String?
+  quantity            Int
+  baseUnitPrice       Decimal  @db.Decimal(10, 2)
+  unitPrice           Decimal  @db.Decimal(10, 2)
+  totalPrice          Decimal  @db.Decimal(10, 2)
+  notes               String?
 
-  order      Order    @relation(fields: [orderId], references: [id])
-  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
-  selections OrderItemSelection[]
+  order               Order    @relation(fields: [orderId], references: [id])
+  menuItem            MenuItem @relation(fields: [menuItemId], references: [id])
+  selections          OrderItemSelection[]
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@index([orderId])
   @@index([menuItemId])
@@ -262,12 +324,36 @@ model OrderItem {
 model OrderItemSelection {
   id          String   @id @default(uuid())
   orderItemId String
+  optionId    String?
+  optionName  String
+  choiceId    String?
   choiceName  String
   price       Decimal? @db.Decimal(10, 2)
 
   orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
 
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
   @@index([orderItemId])
+}
+
+model OrderStatusHistory {
+  id               String      @id @default(uuid())
+  orderId          String
+  fromStatus       OrderStatus?
+  toStatus         OrderStatus
+  changedByUserId  String?
+  note             String?
+
+  order            Order       @relation(fields: [orderId], references: [id])
+  changedByUser    User?       @relation(fields: [changedByUserId], references: [id])
+
+  createdAt        DateTime    @default(now())
+
+  @@index([orderId])
+  @@index([changedByUserId])
+  @@index([createdAt])
 }
 
 enum Role {
@@ -290,4 +376,14 @@ enum PaymentMethod {
   PIX
   CREDIT_CARD
   DEBIT_CARD
+}
+
+enum OptionGroupType {
+  SIZE
+  FRUIT
+  TOPPING
+  COMPLEMENT
+  SYRUP
+  ADDITION
+  CUSTOMIZATION
 }

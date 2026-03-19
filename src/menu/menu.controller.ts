@@ -19,6 +19,9 @@ import type { CurrentUserData } from '../common/interfaces/current-user.interfac
 import { CreateMenuItemDto } from './dto/create-menu-item.dto';
 import { UpdateMenuItemStatusDto } from './dto/update-menu-item-status.dto';
 import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
+import { CreateMenuCategoryDto } from './dto/create-menu-category.dto';
+import { UpdateMenuCategoryDto } from './dto/update-menu-category.dto';
+import { UpdateMenuCategoryStatusDto } from './dto/update-menu-category-status.dto';
 import { MenuService } from './menu.service';
 
 @Controller('menu')
@@ -30,7 +33,7 @@ export class MenuController {
     @Param('restaurantId', new ParseUUIDPipe()) restaurantId: string,
     @Query('onlyAvailable') onlyAvailable?: string,
   ) {
-    let parsedOnlyAvailable: boolean | undefined = undefined;
+    let parsedOnlyAvailable: boolean | undefined;
 
     if (onlyAvailable === 'true') {
       parsedOnlyAvailable = true;
@@ -40,15 +43,76 @@ export class MenuController {
       parsedOnlyAvailable = false;
     }
 
-    return this.menuService.findByRestaurant(
+    return this.menuService.findByRestaurant(restaurantId, parsedOnlyAvailable);
+  }
+
+  @Get('restaurant/:restaurantId/catalog')
+  findCatalogByRestaurant(
+    @Param('restaurantId', new ParseUUIDPipe()) restaurantId: string,
+    @Query('onlyAvailable') onlyAvailable?: string,
+  ) {
+    return this.menuService.findCatalogByRestaurant(
       restaurantId,
-      parsedOnlyAvailable,
+      onlyAvailable !== 'false',
+    );
+  }
+
+  @Get('restaurant/:restaurantId/categories')
+  findCategoriesByRestaurant(
+    @Param('restaurantId', new ParseUUIDPipe()) restaurantId: string,
+    @Query('activeOnly') activeOnly?: string,
+  ) {
+    return this.menuService.findCategoriesByRestaurant(
+      restaurantId,
+      activeOnly === 'true',
     );
   }
 
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.menuService.findOne(id);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.RESTAURANT)
+  @Post('categories')
+  createCategory(
+    @Body() dto: CreateMenuCategoryDto,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.menuService.createCategory(dto, user);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.RESTAURANT)
+  @Patch('categories/:id')
+  updateCategory(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateMenuCategoryDto,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.menuService.updateCategory(id, dto, user);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.RESTAURANT)
+  @Patch('categories/:id/status')
+  updateCategoryStatus(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateMenuCategoryStatusDto,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.menuService.updateCategoryStatus(id, dto.isActive, user);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.RESTAURANT)
+  @Delete('categories/:id')
+  removeCategory(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.menuService.removeCategory(id, user);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

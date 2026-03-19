@@ -13,13 +13,12 @@ import {
 import { Type } from 'class-transformer';
 import { PaymentMethod } from '@prisma/client';
 
-class CreateOrderItemSelectionDto {
-  @IsString()
-  choiceName: string;
+class CreateOrderItemSelectedChoiceDto {
+  @IsUUID()
+  optionId: string;
 
-  @IsOptional()
-  @IsNumber()
-  price?: number;
+  @IsUUID()
+  choiceId: string;
 }
 
 class CreateOrderItemDto {
@@ -31,10 +30,14 @@ class CreateOrderItemDto {
   quantity: number;
 
   @IsOptional()
+  @IsString()
+  notes?: string;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => CreateOrderItemSelectionDto)
-  selections?: CreateOrderItemSelectionDto[];
+  @Type(() => CreateOrderItemSelectedChoiceDto)
+  selectedChoices?: CreateOrderItemSelectedChoiceDto[];
 }
 
 export class CreateOrderDto {
@@ -51,6 +54,11 @@ export class CreateOrderDto {
   @IsString()
   notes?: string;
 
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  cashChangeFor?: number;
+
   @IsString()
   deliveryName: string;
 
@@ -63,3 +71,5 @@ export class CreateOrderDto {
   @Type(() => CreateOrderItemDto)
   items: CreateOrderItemDto[];
 }
+
+export { CreateOrderItemDto, CreateOrderItemSelectedChoiceDto };

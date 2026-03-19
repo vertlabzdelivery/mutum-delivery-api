@@ -1,7 +1,9 @@
 import {
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
+  Min,
   MinLength,
 } from 'class-validator';
 
@@ -20,6 +22,10 @@ export class CreateRestaurantDto {
 
   @IsOptional()
   @IsString()
+  bannerUrl?: string;
+
+  @IsOptional()
+  @IsString()
   phone?: string;
 
   @IsString()
@@ -31,4 +37,9 @@ export class CreateRestaurantDto {
   @IsOptional()
   @IsUUID()
   cityId?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  minOrder?: number;
 }
