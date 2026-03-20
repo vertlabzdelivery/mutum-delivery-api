@@ -14,6 +14,7 @@ import { validateEnv } from './config/env.validation';
 import { CacheModule } from './cache/cache.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { UploadsModule } from './uploads/uploads.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { AppService } from './app.service';
     AddressesModule,
     RestaurantDeliveryZonesModule,
     BillingModule,
+    UploadsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

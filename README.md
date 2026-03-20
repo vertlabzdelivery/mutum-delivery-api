@@ -12,9 +12,21 @@ API principal do ecossistema Mutum Delivery, construída com NestJS + Prisma.
 - página inicial amigável em `/`
 - healthcheck em `/health`
 - cache Redis opcional para rotas públicas de leitura
+- upload de imagens com Vercel Blob para logo do restaurante e foto de produto
 
-## Rotas que passaram a usar cache
-Estas são as que mais valem a pena porque são lidas o tempo todo e mudam pouco:
+## Rotas de upload
+As imagens agora podem ser enviadas pelo painel do restaurante e a API devolve a URL pública pronta para salvar:
+- `POST /uploads/restaurant-logo`
+- `POST /uploads/menu-item-image`
+
+As duas aceitam `multipart/form-data` com:
+- `restaurantId`
+- `file`
+
+As rotas exigem autenticação e só aceitam contas `ADMIN` ou `RESTAURANT` com acesso ao restaurante informado.
+
+## Cache Redis
+Estas são as rotas públicas de leitura que mais valem cache:
 - `GET /restaurants`
 - `GET /restaurants/active`
 - `GET /restaurants/:id`
@@ -30,7 +42,7 @@ Estas são as que mais valem a pena porque são lidas o tempo todo e mudam pouco
 - `GET /locations/cities/:cityId/neighborhoods`
 - `GET /locations/neighborhoods/:id`
 
-## Rotas que **não** devem usar cache agora
+## Rotas que não devem usar cache agora
 - login, refresh token e `/auth/me`
 - criação de pedidos e cotação
 - `/orders/my`, `/orders/:id` e listas internas do restaurante
@@ -39,7 +51,7 @@ Estas são as que mais valem a pena porque são lidas o tempo todo e mudam pouco
 ## Variáveis de ambiente
 Use a `.env.example` como base.
 
-Exemplo com Redis:
+Exemplo com Redis + Blob:
 
 ```env
 CACHE_ENABLED=true
@@ -50,10 +62,16 @@ CACHE_TTL_MENU=60
 CACHE_TTL_MENU_ITEM=120
 CACHE_TTL_DELIVERY_ZONES=300
 CACHE_TTL_LOCATIONS=86400
+BLOB_READ_WRITE_TOKEN="seu_token_do_blob"
+BLOB_MAX_RESTAURANT_LOGO_BYTES=716800
+BLOB_MAX_MENU_ITEM_IMAGE_BYTES=921600
 ```
 
-## Sua configuração do Redis
-No Vercel, adicione a variável `REDIS_URL` com a URL do Redis Cloud que você já gerou. Evite salvar a senha real no repositório.
+## Como funciona o upload
+- o painel comprime e redimensiona a imagem antes do envio
+- a API valida tipo e tamanho final
+- o arquivo é enviado ao Vercel Blob em modo público
+- a resposta já volta com a URL pronta para preencher o campo `logoUrl` ou `imageUrl`
 
 ## Rodando localmente
 1. Configure o banco e as variáveis de ambiente.
@@ -74,9 +92,10 @@ No Vercel, adicione a variável `REDIS_URL` com a URL do Redis Cloud que você j
 1. Abra o projeto da API no Vercel.
 2. Vá em **Settings > Environment Variables**.
 3. Adicione `REDIS_URL` com o valor do seu Redis.
-4. Opcionalmente adicione os TTLs de cache.
-5. Faça um novo deploy.
-6. Teste `https://SEU-DOMINIO/health`.
+4. Confirme que `BLOB_READ_WRITE_TOKEN` está presente no projeto.
+5. Opcionalmente ajuste os limites `BLOB_MAX_RESTAURANT_LOGO_BYTES` e `BLOB_MAX_MENU_ITEM_IMAGE_BYTES`.
+6. Faça um novo deploy.
+7. Teste `https://SEU-DOMINIO/health` e depois os uploads pelo painel.
 
 Quando o Redis conectar corretamente, o `/health` volta com algo parecido com:
 
@@ -92,9 +111,6 @@ Quando o Redis conectar corretamente, o `/health` volta com algo parecido com:
   }
 }
 ```
-
-## Como o cache é invalidado
-Quando você altera restaurante, cardápio, horários ou zonas de entrega, a API apaga as chaves relacionadas automaticamente. Então não precisa limpar o Redis manualmente a cada edição.
 
 ## Produção
 ```bash
