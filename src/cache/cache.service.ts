@@ -214,11 +214,17 @@ export class RedisCacheService implements OnModuleInit {
     }
 
     const forceTls = process.env.REDIS_TLS === 'true';
-    const socket = {
-      connectTimeout: this.getConnectTimeoutMs(),
-      reconnectStrategy: () => false,
-      ...(forceTls || redisUrl.startsWith('rediss://') ? { tls: true } : {}),
-    };
+    const useTls = forceTls || redisUrl.startsWith('rediss://');
+    const socket = useTls
+      ? {
+          connectTimeout: this.getConnectTimeoutMs(),
+          reconnectStrategy: false as const,
+          tls: true as const,
+        }
+      : {
+          connectTimeout: this.getConnectTimeoutMs(),
+          reconnectStrategy: false as const,
+        };
 
     const client = createClient({
       url: redisUrl,
