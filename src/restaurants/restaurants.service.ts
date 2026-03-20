@@ -11,7 +11,7 @@ import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
 import { ReplaceOpeningHoursDto } from './dto/replace-opening-hours.dto';
 import { RedisCacheService } from '../cache/cache.service';
-import { CacheKeys, CachePrefixes } from '../cache/cache.keys';
+import { CacheKeys, getRestaurantMenuCacheKeys } from '../cache/cache.keys';
 
 @Injectable()
 export class RestaurantsService {
@@ -484,8 +484,8 @@ export class RestaurantsService {
       CacheKeys.restaurantsActive,
       CacheKeys.restaurantDetail(restaurantId),
       CacheKeys.publicDeliveryZones(restaurantId),
+      ...getRestaurantMenuCacheKeys(restaurantId),
     ]);
 
-    await this.cache.delByPrefix(CachePrefixes.restaurantMenu(restaurantId));
   }
 }

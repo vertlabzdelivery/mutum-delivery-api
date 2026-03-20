@@ -10,7 +10,7 @@ import type { CurrentUserData } from '../common/interfaces/current-user.interfac
 import { CreateRestaurantDeliveryZoneDto } from './dto/create-restaurant-delivery-zone.dto';
 import { UpdateRestaurantDeliveryZoneDto } from './dto/update-restaurant-delivery-zone.dto';
 import { RedisCacheService } from '../cache/cache.service';
-import { CacheKeys, CachePrefixes } from '../cache/cache.keys';
+import { CacheKeys, getRestaurantMenuCacheKeys } from '../cache/cache.keys';
 
 @Injectable()
 export class RestaurantDeliveryZonesService {
@@ -414,9 +414,9 @@ export class RestaurantDeliveryZonesService {
     await this.cache.delMany([
       CacheKeys.restaurantDetail(restaurantId),
       CacheKeys.publicDeliveryZones(restaurantId),
+      ...getRestaurantMenuCacheKeys(restaurantId),
     ]);
 
-    await this.cache.delByPrefix(CachePrefixes.restaurantMenu(restaurantId));
   }
 
   private ensureCanManageRestaurant(

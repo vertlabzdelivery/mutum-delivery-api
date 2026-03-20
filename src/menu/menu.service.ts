@@ -16,7 +16,7 @@ import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { CreateMenuCategoryDto } from './dto/create-menu-category.dto';
 import { UpdateMenuCategoryDto } from './dto/update-menu-category.dto';
 import { RedisCacheService } from '../cache/cache.service';
-import { CacheKeys, CachePrefixes } from '../cache/cache.keys';
+import { CacheKeys, getRestaurantMenuCacheKeys } from '../cache/cache.keys';
 
 @Injectable()
 export class MenuService {
@@ -588,10 +588,10 @@ export class MenuService {
       CacheKeys.restaurantsActive,
       CacheKeys.restaurantDetail(restaurantId),
       CacheKeys.publicDeliveryZones(restaurantId),
+      ...getRestaurantMenuCacheKeys(restaurantId),
       ...(itemId ? [CacheKeys.menuItem(itemId)] : []),
     ]);
 
-    await this.cache.delByPrefix(CachePrefixes.restaurantMenu(restaurantId));
   }
 
   private ensureCanManageRestaurant(ownerId: string, currentUser: CurrentUserData) {

@@ -19,6 +19,7 @@ export class RedisCacheService implements OnModuleInit {
   private readonly logger = new Logger(RedisCacheService.name);
   private static client: RedisLikeClient | null = null;
   private static connectPromise: Promise<RedisLikeClient | null> | null = null;
+  private static disabledUntil = 0;
 
   async onModuleInit() {
     await this.getClient();
@@ -63,12 +64,16 @@ export class RedisCacheService implements OnModuleInit {
 
     const payload = JSON.stringify(value);
 
-    if (ttlSeconds && ttlSeconds > 0) {
-      await client.set(key, payload, { EX: ttlSeconds });
-      return;
+    try {
+      await this.withOperationTimeout(
+        ttlSeconds && ttlSeconds > 0
+          ? client.set(key, payload, { EX: ttlSeconds })
+          : client.set(key, payload),
+        `set:${key}`,
+      );
+    } catch (error) {
+      this.handleRedisFailure(error, `set:${key}`);
     }
-
-    await client.set(key, payload);
   }
 
   async del(key: string) {
@@ -78,7 +83,11 @@ export class RedisCacheService implements OnModuleInit {
       return;
     }
 
-    await client.del(key);
+    try {
+      await this.withOperationTimeout(client.del(key), `del:${key}`);
+    } catch (error) {
+      this.handleRedisFailure(error, `del:${key}`);
+    }
   }
 
   async delMany(keys: string[]) {
@@ -94,7 +103,14 @@ export class RedisCacheService implements OnModuleInit {
       return;
     }
 
-    await client.del(normalizedKeys);
+    try {
+      await this.withOperationTimeout(
+        client.del(normalizedKeys),
+        `delMany:${normalizedKeys.length}`,
+      );
+    } catch (error) {
+      this.handleRedisFailure(error, `delMany:${normalizedKeys.length}`);
+    }
   }
 
   async delByPrefix(prefix: string) {
@@ -106,18 +122,26 @@ export class RedisCacheService implements OnModuleInit {
 
     let cursor = '0';
 
-    do {
-      const result = await client.scan(cursor, {
-        MATCH: `${prefix}*`,
-        COUNT: 100,
-      });
+    try {
+      do {
+        const result = await this.withOperationTimeout(
+          client.scan(cursor, {
+            MATCH: `${prefix}*`,
+            COUNT: 100,
+          }),
+          `scan:${prefix}`,
+          this.getOperationTimeoutMs() * 2,
+        );
 
-      cursor = result.cursor;
+        cursor = result.cursor;
 
-      if (result.keys.length) {
-        await client.del(result.keys);
-      }
-    } while (cursor !== '0');
+        if (result.keys.length) {
+          await this.withOperationTimeout(client.del(result.keys), `del:${prefix}`);
+        }
+      } while (cursor !== '0');
+    } catch (error) {
+      this.handleRedisFailure(error, `delByPrefix:${prefix}`);
+    }
   }
 
   async getStatus() {
@@ -139,20 +163,29 @@ export class RedisCacheService implements OnModuleInit {
       return { hit: false };
     }
 
-    const raw = await client.get(key);
+    try {
+      const raw = await this.withOperationTimeout(client.get(key), `get:${key}`);
 
-    if (raw === null) {
+      if (raw === null) {
+        return { hit: false };
+      }
+
+      return {
+        hit: true,
+        value: JSON.parse(raw) as T,
+      };
+    } catch (error) {
+      this.handleRedisFailure(error, `get:${key}`);
       return { hit: false };
     }
-
-    return {
-      hit: true,
-      value: JSON.parse(raw) as T,
-    };
   }
 
   private async getClient(): Promise<RedisLikeClient | null> {
     if (!this.isEnabled()) {
+      return null;
+    }
+
+    if (Date.now() < RedisCacheService.disabledUntil) {
       return null;
     }
 
@@ -180,8 +213,17 @@ export class RedisCacheService implements OnModuleInit {
       return null;
     }
 
+    const forceTls = process.env.REDIS_TLS === 'true';
+    const socket = {
+      connectTimeout: this.getConnectTimeoutMs(),
+      reconnectStrategy: () => false,
+      ...(forceTls || redisUrl.startsWith('rediss://') ? { tls: true } : {}),
+    };
+
     const client = createClient({
       url: redisUrl,
+      socket,
+      disableOfflineQueue: true,
     }) as unknown as RedisLikeClient;
 
     client.on('error', (error) => {
@@ -189,7 +231,7 @@ export class RedisCacheService implements OnModuleInit {
     });
 
     try {
-      await client.connect();
+      await this.withTimeout(client.connect(), this.getConnectTimeoutMs(), 'connect');
       RedisCacheService.client = client;
       this.logger.log('Redis cache conectado');
       return client;
@@ -197,7 +239,53 @@ export class RedisCacheService implements OnModuleInit {
       const message = error instanceof Error ? error.message : 'erro desconhecido';
       this.logger.warn(`Redis indisponível. A API seguirá sem cache. Motivo: ${message}`);
       RedisCacheService.client = null;
+      RedisCacheService.disabledUntil = Date.now() + this.getBackoffMs();
       return null;
     }
+  }
+
+  private getConnectTimeoutMs() {
+    const parsed = Number(process.env.REDIS_CONNECT_TIMEOUT_MS);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1500;
+  }
+
+  private getOperationTimeoutMs() {
+    const parsed = Number(process.env.REDIS_OPERATION_TIMEOUT_MS);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 500;
+  }
+
+  private getBackoffMs() {
+    const parsed = Number(process.env.REDIS_BACKOFF_MS);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 15000;
+  }
+
+  private async withOperationTimeout<T>(promise: Promise<T>, label: string, ms?: number) {
+    return this.withTimeout(promise, ms ?? this.getOperationTimeoutMs(), label);
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`Redis timeout em ${label} (${ms}ms)`));
+          }, ms);
+        }),
+      ]);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  private handleRedisFailure(error: unknown, context: string) {
+    const message = error instanceof Error ? error.message : 'erro desconhecido';
+    this.logger.warn(`Cache ignorado em ${context}: ${message}`);
+    RedisCacheService.client = null;
+    RedisCacheService.disabledUntil = Date.now() + this.getBackoffMs();
   }
 }

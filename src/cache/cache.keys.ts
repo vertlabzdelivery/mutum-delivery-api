@@ -35,3 +35,13 @@ export const CacheKeys = {
 export const CachePrefixes = {
   restaurantMenu: (restaurantId: string) => `mutum:menu:restaurant:${restaurantId}:`,
 };
+
+export const getRestaurantMenuCacheKeys = (restaurantId: string) => [
+  CacheKeys.menuItems(restaurantId),
+  CacheKeys.menuItems(restaurantId, true),
+  CacheKeys.menuItems(restaurantId, false),
+  CacheKeys.menuCatalog(restaurantId, true),
+  CacheKeys.menuCatalog(restaurantId, false),
+  CacheKeys.menuCategories(restaurantId),
+  CacheKeys.menuCategories(restaurantId, true),
+];

@@ -117,3 +117,27 @@ Quando o Redis conectar corretamente, o `/health` volta com algo parecido com:
 npm run build
 npm run start:prod
 ```
+
+
+## Ajuste importante do Redis em produção
+
+Se a API salva no banco mas o painel recebe erro, o problema costuma ser o cache demorando para conectar ou invalidar chaves depois da alteração.
+Esta versão já foi ajustada para:
+
+- não travar a resposta por causa do Redis;
+- desistir rápido quando o Redis estiver lento;
+- continuar funcionando sem cache se o Redis falhar;
+- evitar `SCAN` nas invalidações principais do cardápio.
+
+Variáveis úteis:
+
+```env
+CACHE_ENABLED=true
+REDIS_URL=redis://...
+REDIS_TLS=false
+REDIS_CONNECT_TIMEOUT_MS=1500
+REDIS_OPERATION_TIMEOUT_MS=500
+REDIS_BACKOFF_MS=15000
+```
+
+Se o seu provedor exigir TLS, troque para `rediss://` ou defina `REDIS_TLS=true`.
