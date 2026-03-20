@@ -15,10 +15,15 @@ import {
 import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { CreateMenuCategoryDto } from './dto/create-menu-category.dto';
 import { UpdateMenuCategoryDto } from './dto/update-menu-category.dto';
+import { RedisCacheService } from '../cache/cache.service';
+import { CacheKeys, CachePrefixes } from '../cache/cache.keys';
 
 @Injectable()
 export class MenuService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: RedisCacheService,
+  ) {}
 
   async createCategory(
     dto: CreateMenuCategoryDto,
@@ -27,7 +32,7 @@ export class MenuService {
     const restaurant = await this.ensureRestaurantExists(dto.restaurantId);
     this.ensureCanManageRestaurant(restaurant.ownerId, currentUser);
 
-    return this.prisma.menuCategory.create({
+    const created = await this.prisma.menuCategory.create({
       data: {
         restaurantId: dto.restaurantId,
         name: dto.name.trim(),
@@ -40,6 +45,9 @@ export class MenuService {
         menuItems: true,
       },
     });
+
+    await this.invalidateRestaurantMenuCache(dto.restaurantId);
+    return created;
   }
 
   async findCategoriesByRestaurant(
@@ -48,19 +56,24 @@ export class MenuService {
   ) {
     await this.ensureRestaurantExists(restaurantId);
 
-    return this.prisma.menuCategory.findMany({
-      where: {
-        restaurantId,
-        ...(activeOnly ? { isActive: true } : {}),
-      },
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-      include: {
-        menuItems: {
-          where: activeOnly ? { isAvailable: true } : undefined,
+    return this.cache.getOrSet(
+      CacheKeys.menuCategories(restaurantId, activeOnly),
+      this.cache.getTtlSeconds('CACHE_TTL_MENU', 60),
+      async () =>
+        this.prisma.menuCategory.findMany({
+          where: {
+            restaurantId,
+            ...(activeOnly ? { isActive: true } : {}),
+          },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-        },
-      },
-    });
+          include: {
+            menuItems: {
+              where: activeOnly ? { isAvailable: true } : undefined,
+              orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+            },
+          },
+        }),
+    );
   }
 
   async updateCategory(
@@ -71,7 +84,7 @@ export class MenuService {
     const category = await this.ensureCategoryExists(id);
     this.ensureCanManageRestaurant(category.restaurant.ownerId, currentUser);
 
-    return this.prisma.menuCategory.update({
+    const updated = await this.prisma.menuCategory.update({
       where: { id },
       data: {
         name: dto.name?.trim(),
@@ -84,6 +97,9 @@ export class MenuService {
         menuItems: true,
       },
     });
+
+    await this.invalidateRestaurantMenuCache(category.restaurantId);
+    return updated;
   }
 
   async updateCategoryStatus(
@@ -94,7 +110,7 @@ export class MenuService {
     const category = await this.ensureCategoryExists(id);
     this.ensureCanManageRestaurant(category.restaurant.ownerId, currentUser);
 
-    return this.prisma.menuCategory.update({
+    const updated = await this.prisma.menuCategory.update({
       where: { id },
       data: { isActive },
       select: {
@@ -104,6 +120,9 @@ export class MenuService {
         updatedAt: true,
       },
     });
+
+    await this.invalidateRestaurantMenuCache(category.restaurantId);
+    return updated;
   }
 
   async removeCategory(id: string, currentUser: CurrentUserData) {
@@ -123,6 +142,7 @@ export class MenuService {
     }
 
     await this.prisma.menuCategory.delete({ where: { id } });
+    await this.invalidateRestaurantMenuCache(category.restaurantId);
 
     return {
       message: 'Categoria removida com sucesso',
@@ -139,7 +159,7 @@ export class MenuService {
 
     this.validateOptions(dto.options);
 
-    return this.prisma.menuItem.create({
+    const created = await this.prisma.menuItem.create({
       data: {
         restaurantId: dto.restaurantId,
         categoryId: dto.categoryId,
@@ -161,126 +181,148 @@ export class MenuService {
       },
       include: this.menuItemInclude(),
     });
+
+    await this.invalidateRestaurantMenuCache(dto.restaurantId, created.id);
+    return created;
   }
 
   async findByRestaurant(restaurantId: string, onlyAvailable?: boolean) {
     await this.ensureRestaurantExists(restaurantId);
 
-    return this.prisma.menuItem.findMany({
-      where: {
-        restaurantId,
-        ...(onlyAvailable === true ? { isAvailable: true } : {}),
-      },
-      include: this.menuItemInclude(),
-      orderBy: [
-        { category: { sortOrder: 'asc' } },
-        { sortOrder: 'asc' },
-        { createdAt: 'asc' },
-      ],
-    });
+    return this.cache.getOrSet(
+      CacheKeys.menuItems(restaurantId, onlyAvailable),
+      this.cache.getTtlSeconds('CACHE_TTL_MENU', 60),
+      async () =>
+        this.prisma.menuItem.findMany({
+          where: {
+            restaurantId,
+            ...(onlyAvailable === true ? { isAvailable: true } : {}),
+          },
+          include: this.menuItemInclude(),
+          orderBy: [
+            { category: { sortOrder: 'asc' } },
+            { sortOrder: 'asc' },
+            { createdAt: 'asc' },
+          ],
+        }),
+    );
   }
 
   async findCatalogByRestaurant(restaurantId: string, onlyAvailable = true) {
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: restaurantId },
-      include: {
-        city: {
+    return this.cache.getOrSet(
+      CacheKeys.menuCatalog(restaurantId, onlyAvailable),
+      this.cache.getTtlSeconds('CACHE_TTL_MENU', 60),
+      async () => {
+        const restaurant = await this.prisma.restaurant.findUnique({
+          where: { id: restaurantId },
           include: {
-            state: true,
+            city: {
+              include: {
+                state: true,
+              },
+            },
+            deliveryZones: {
+              where: onlyAvailable ? { isActive: true } : undefined,
+              include: {
+                neighborhood: true,
+              },
+              orderBy: { deliveryFee: 'asc' },
+            },
           },
-        },
-        deliveryZones: {
-          where: onlyAvailable ? { isActive: true } : undefined,
-          include: {
-            neighborhood: true,
-          },
-          orderBy: { deliveryFee: 'asc' },
-        },
-      },
-    });
+        });
 
-    if (!restaurant) {
-      throw new NotFoundException('Restaurante não encontrado');
-    }
+        if (!restaurant) {
+          throw new NotFoundException('Restaurante não encontrado');
+        }
 
-    const categories = await this.prisma.menuCategory.findMany({
-      where: {
-        restaurantId,
-        ...(onlyAvailable ? { isActive: true } : {}),
-      },
-      include: {
-        menuItems: {
+        const categories = await this.prisma.menuCategory.findMany({
           where: {
+            restaurantId,
+            ...(onlyAvailable ? { isActive: true } : {}),
+          },
+          include: {
+            menuItems: {
+              where: {
+                ...(onlyAvailable ? { isAvailable: true } : {}),
+              },
+              include: this.menuItemInclude(),
+              orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+            },
+          },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        });
+
+        const uncategorizedItems = await this.prisma.menuItem.findMany({
+          where: {
+            restaurantId,
+            categoryId: null,
             ...(onlyAvailable ? { isAvailable: true } : {}),
           },
           include: this.menuItemInclude(),
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-        },
+        });
+
+        const normalizedCategories: Array<
+          (typeof categories)[number] & { itemCount: number }
+        > = categories.map((category) => ({
+          ...category,
+          itemCount: category.menuItems.length,
+        }));
+
+        if (uncategorizedItems.length > 0) {
+          normalizedCategories.push({
+            id: 'uncategorized',
+            restaurantId,
+            name: 'Mais itens',
+            description: 'Itens sem categoria definida',
+            imageUrl: null,
+            sortOrder: 999999,
+            isActive: true,
+            createdAt: new Date(0),
+            updatedAt: new Date(0),
+            menuItems: uncategorizedItems,
+            itemCount: uncategorizedItems.length,
+          });
+        }
+
+        return {
+          restaurant,
+          categories: normalizedCategories,
+          featuredItems: normalizedCategories
+            .flatMap((category) => category.menuItems)
+            .filter((item) => item.isFeatured),
+        };
       },
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-    });
-
-    const uncategorizedItems = await this.prisma.menuItem.findMany({
-      where: {
-        restaurantId,
-        categoryId: null,
-        ...(onlyAvailable ? { isAvailable: true } : {}),
-      },
-      include: this.menuItemInclude(),
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-    });
-
-    const normalizedCategories: Array<(typeof categories)[number] & { itemCount: number }> = categories.map((category) => ({
-      ...category,
-      itemCount: category.menuItems.length,
-    }));
-
-    if (uncategorizedItems.length > 0) {
-      normalizedCategories.push({
-        id: 'uncategorized',
-        restaurantId,
-        name: 'Mais itens',
-        description: 'Itens sem categoria definida',
-        imageUrl: null,
-        sortOrder: 999999,
-        isActive: true,
-        createdAt: new Date(0),
-        updatedAt: new Date(0),
-        menuItems: uncategorizedItems,
-        itemCount: uncategorizedItems.length,
-      });
-    }
-
-    return {
-      restaurant,
-      categories: normalizedCategories,
-      featuredItems: normalizedCategories
-        .flatMap((category) => category.menuItems)
-        .filter((item) => item.isFeatured),
-    };
+    );
   }
 
   async findOne(id: string) {
-    const item = await this.prisma.menuItem.findUnique({
-      where: { id },
-      include: {
-        ...this.menuItemInclude(),
-        restaurant: {
-          select: {
-            id: true,
-            name: true,
-            isActive: true,
-            ownerId: true,
+    return this.cache.getOrSet(
+      CacheKeys.menuItem(id),
+      this.cache.getTtlSeconds('CACHE_TTL_MENU_ITEM', 120),
+      async () => {
+        const item = await this.prisma.menuItem.findUnique({
+          where: { id },
+          include: {
+            ...this.menuItemInclude(),
+            restaurant: {
+              select: {
+                id: true,
+                name: true,
+                isActive: true,
+                ownerId: true,
+              },
+            },
           },
-        },
+        });
+
+        if (!item) {
+          throw new NotFoundException('Item do cardápio não encontrado');
+        }
+
+        return item;
       },
-    });
-
-    if (!item) {
-      throw new NotFoundException('Item do cardápio não encontrado');
-    }
-
-    return item;
+    );
   }
 
   async update(
@@ -297,7 +339,7 @@ export class MenuService {
 
     this.validateOptions(dto.options);
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       if (dto.options) {
         await tx.menuItemChoice.deleteMany({
           where: {
@@ -340,6 +382,9 @@ export class MenuService {
         include: this.menuItemInclude(),
       });
     });
+
+    await this.invalidateRestaurantMenuCache(item.restaurantId, id);
+    return updated;
   }
 
   async updateStatus(
@@ -350,7 +395,7 @@ export class MenuService {
     const item = await this.ensureItemExists(id);
     this.ensureCanManageRestaurant(item.restaurant.ownerId, currentUser);
 
-    return this.prisma.menuItem.update({
+    const updated = await this.prisma.menuItem.update({
       where: { id },
       data: { isAvailable },
       select: {
@@ -360,6 +405,9 @@ export class MenuService {
         updatedAt: true,
       },
     });
+
+    await this.invalidateRestaurantMenuCache(item.restaurantId, id);
+    return updated;
   }
 
   async remove(id: string, currentUser: CurrentUserData) {
@@ -370,6 +418,7 @@ export class MenuService {
       where: { id },
     });
 
+    await this.invalidateRestaurantMenuCache(item.restaurantId, id);
     return {
       message: 'Item removido com sucesso',
     };
@@ -528,6 +577,21 @@ export class MenuService {
     }
 
     return item;
+  }
+
+  private async invalidateRestaurantMenuCache(
+    restaurantId: string,
+    itemId?: string,
+  ) {
+    await this.cache.delMany([
+      CacheKeys.restaurantsAll,
+      CacheKeys.restaurantsActive,
+      CacheKeys.restaurantDetail(restaurantId),
+      CacheKeys.publicDeliveryZones(restaurantId),
+      ...(itemId ? [CacheKeys.menuItem(itemId)] : []),
+    ]);
+
+    await this.cache.delByPrefix(CachePrefixes.restaurantMenu(restaurantId));
   }
 
   private ensureCanManageRestaurant(ownerId: string, currentUser: CurrentUserData) {

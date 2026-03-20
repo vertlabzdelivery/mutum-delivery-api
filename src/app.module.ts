@@ -11,6 +11,9 @@ import { AddressesModule } from './addresses/addresses.module';
 import { RestaurantDeliveryZonesModule } from './restaurant-delivery-zones/restaurant-delivery-zones.module';
 import { BillingModule } from './billing/billing.module';
 import { validateEnv } from './config/env.validation';
+import { CacheModule } from './cache/cache.module';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
 
 @Module({
   imports: [
@@ -18,6 +21,7 @@ import { validateEnv } from './config/env.validation';
       isGlobal: true,
       validate: validateEnv,
     }),
+    CacheModule,
     PrismaModule,
     AuthModule,
     UsersModule,
@@ -29,5 +33,7 @@ import { validateEnv } from './config/env.validation';
     RestaurantDeliveryZonesModule,
     BillingModule,
   ],
+  controllers: [AppController],
+  providers: [AppService],
 })
 export class AppModule {}

@@ -10,10 +10,15 @@ import type { CurrentUserData } from '../common/interfaces/current-user.interfac
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
 import { ReplaceOpeningHoursDto } from './dto/replace-opening-hours.dto';
+import { RedisCacheService } from '../cache/cache.service';
+import { CacheKeys, CachePrefixes } from '../cache/cache.keys';
 
 @Injectable()
 export class RestaurantsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: RedisCacheService,
+  ) {}
 
   async create(dto: CreateRestaurantDto) {
     const owner = await this.prisma.user.findUnique({
@@ -50,32 +55,46 @@ export class RestaurantsService {
       include: this.restaurantInclude(),
     });
 
-    return this.serializeRestaurant(restaurant);
+    const serialized = this.serializeRestaurant(restaurant);
+    await this.invalidateRestaurantPublicCache(restaurant.id);
+    return serialized;
   }
 
   async findAll() {
-    const restaurants = await this.prisma.restaurant.findMany({
-      orderBy: {
-        createdAt: 'desc',
-      },
-      include: this.restaurantInclude(),
-    });
+    return this.cache.getOrSet(
+      CacheKeys.restaurantsAll,
+      this.cache.getTtlSeconds('CACHE_TTL_RESTAURANTS', 60),
+      async () => {
+        const restaurants = await this.prisma.restaurant.findMany({
+          orderBy: {
+            createdAt: 'desc',
+          },
+          include: this.restaurantInclude(),
+        });
 
-    return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
+        return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
+      },
+    );
   }
 
   async findActive() {
-    const restaurants = await this.prisma.restaurant.findMany({
-      where: {
-        isActive: true,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-      include: this.restaurantInclude(false),
-    });
+    return this.cache.getOrSet(
+      CacheKeys.restaurantsActive,
+      this.cache.getTtlSeconds('CACHE_TTL_RESTAURANTS', 60),
+      async () => {
+        const restaurants = await this.prisma.restaurant.findMany({
+          where: {
+            isActive: true,
+          },
+          orderBy: {
+            createdAt: 'desc',
+          },
+          include: this.restaurantInclude(false),
+        });
 
-    return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
+        return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
+      },
+    );
   }
 
   async findOwnedByUser(userId: string) {
@@ -160,36 +179,42 @@ export class RestaurantsService {
   }
 
   async findOne(id: string) {
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id },
-      include: {
-        ...this.restaurantInclude(),
-        deliveryZones: {
+    return this.cache.getOrSet(
+      CacheKeys.restaurantDetail(id),
+      this.cache.getTtlSeconds('CACHE_TTL_RESTAURANT_DETAIL', 90),
+      async () => {
+        const restaurant = await this.prisma.restaurant.findUnique({
+          where: { id },
           include: {
-            neighborhood: {
+            ...this.restaurantInclude(),
+            deliveryZones: {
               include: {
-                city: {
+                neighborhood: {
                   include: {
-                    state: true,
+                    city: {
+                      include: {
+                        state: true,
+                      },
+                    },
                   },
+                },
+              },
+              orderBy: {
+                neighborhood: {
+                  name: 'asc',
                 },
               },
             },
           },
-          orderBy: {
-            neighborhood: {
-              name: 'asc',
-            },
-          },
-        },
+        });
+
+        if (!restaurant) {
+          throw new NotFoundException('Restaurante não encontrado');
+        }
+
+        return this.serializeRestaurant(restaurant);
       },
-    });
-
-    if (!restaurant) {
-      throw new NotFoundException('Restaurante não encontrado');
-    }
-
-    return this.serializeRestaurant(restaurant);
+    );
   }
 
   async update(
@@ -222,7 +247,9 @@ export class RestaurantsService {
       include: this.restaurantInclude(),
     });
 
-    return this.serializeRestaurant(updated);
+    const serialized = this.serializeRestaurant(updated);
+    await this.invalidateRestaurantPublicCache(id);
+    return serialized;
   }
 
   async updateStatus(
@@ -234,7 +261,7 @@ export class RestaurantsService {
 
     this.ensureCanManageRestaurant(restaurant.ownerId, currentUser);
 
-    return this.prisma.restaurant.update({
+    const updated = await this.prisma.restaurant.update({
       where: { id },
       data: {
         isActive,
@@ -246,6 +273,9 @@ export class RestaurantsService {
         updatedAt: true,
       },
     });
+
+    await this.invalidateRestaurantPublicCache(id);
+    return updated;
   }
 
   private restaurantInclude(includeOwnerContact = true): Prisma.RestaurantInclude {
@@ -439,10 +469,23 @@ export class RestaurantsService {
     await this.prisma.$transaction(operations);
 
     const updatedHours = await this.findOpeningHours(id);
+    await this.invalidateRestaurantPublicCache(id);
+
     return {
       restaurantId: restaurant.id,
       hours: updatedHours,
       ...this.getRestaurantOpeningStatus(updatedHours),
     };
+  }
+
+  private async invalidateRestaurantPublicCache(restaurantId: string) {
+    await this.cache.delMany([
+      CacheKeys.restaurantsAll,
+      CacheKeys.restaurantsActive,
+      CacheKeys.restaurantDetail(restaurantId),
+      CacheKeys.publicDeliveryZones(restaurantId),
+    ]);
+
+    await this.cache.delByPrefix(CachePrefixes.restaurantMenu(restaurantId));
   }
 }

@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
+import { RedisCacheService } from './cache/cache.service';
 
 @Injectable()
 export class AppService {
+  constructor(private readonly cache: RedisCacheService) {}
+
   getHello(): string {
     return `<!doctype html>
 <html lang="pt-BR">
@@ -96,8 +99,8 @@ export class AppService {
         <p>Os fluxos principais começam em <code>/auth/login</code>, <code>/auth/register</code> e <code>/auth/me</code>.</p>
       </article>
       <article class="item">
-        <strong>Módulos</strong>
-        <p>Restaurantes, endereços, cardápio, pedidos, zonas de entrega e faturamento já estão disponíveis.</p>
+        <strong>Cache</strong>
+        <p>Quando <code>REDIS_URL</code> estiver configurada, leituras públicas usam Redis para reduzir latência.</p>
       </article>
     </section>
   </main>
@@ -105,11 +108,12 @@ export class AppService {
 </html>`;
   }
 
-  getHealth() {
+  async getHealth() {
     return {
       ok: true,
       service: 'mutum-delivery-api',
       timestamp: new Date().toISOString(),
+      cache: await this.cache.getStatus(),
     };
   }
 }

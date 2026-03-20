@@ -9,10 +9,15 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { CurrentUserData } from '../common/interfaces/current-user.interface';
 import { CreateRestaurantDeliveryZoneDto } from './dto/create-restaurant-delivery-zone.dto';
 import { UpdateRestaurantDeliveryZoneDto } from './dto/update-restaurant-delivery-zone.dto';
+import { RedisCacheService } from '../cache/cache.service';
+import { CacheKeys, CachePrefixes } from '../cache/cache.keys';
 
 @Injectable()
 export class RestaurantDeliveryZonesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: RedisCacheService,
+  ) {}
 
   async create(
     dto: CreateRestaurantDeliveryZoneDto,
@@ -71,7 +76,7 @@ export class RestaurantDeliveryZonesService {
       );
     }
 
-    return this.prisma.restaurantDeliveryZone.create({
+    const created = await this.prisma.restaurantDeliveryZone.create({
       data: {
         restaurantId: dto.restaurantId,
         neighborhoodId: dto.neighborhoodId,
@@ -99,6 +104,9 @@ export class RestaurantDeliveryZonesService {
         },
       },
     });
+
+    await this.invalidateRestaurantDeliveryCache(dto.restaurantId);
+    return created;
   }
 
   async findByRestaurant(
@@ -155,44 +163,50 @@ export class RestaurantDeliveryZonesService {
   }
 
   async findPublicByRestaurant(restaurantId: string) {
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: restaurantId },
-      select: {
-        id: true,
-        isActive: true,
-      },
-    });
+    return this.cache.getOrSet(
+      CacheKeys.publicDeliveryZones(restaurantId),
+      this.cache.getTtlSeconds('CACHE_TTL_DELIVERY_ZONES', 300),
+      async () => {
+        const restaurant = await this.prisma.restaurant.findUnique({
+          where: { id: restaurantId },
+          select: {
+            id: true,
+            isActive: true,
+          },
+        });
 
-    if (!restaurant) {
-      throw new NotFoundException('Restaurante não encontrado');
-    }
+        if (!restaurant) {
+          throw new NotFoundException('Restaurante não encontrado');
+        }
 
-    if (!restaurant.isActive) {
-      return [];
-    }
+        if (!restaurant.isActive) {
+          return [];
+        }
 
-    return this.prisma.restaurantDeliveryZone.findMany({
-      where: {
-        restaurantId,
-        isActive: true,
-      },
-      include: {
-        neighborhood: {
+        return this.prisma.restaurantDeliveryZone.findMany({
+          where: {
+            restaurantId,
+            isActive: true,
+          },
           include: {
-            city: {
+            neighborhood: {
               include: {
-                state: true,
+                city: {
+                  include: {
+                    state: true,
+                  },
+                },
               },
             },
           },
-        },
+          orderBy: {
+            neighborhood: {
+              name: 'asc',
+            },
+          },
+        });
       },
-      orderBy: {
-        neighborhood: {
-          name: 'asc',
-        },
-      },
-    });
+    );
   }
 
   async findOne(id: string, currentUser: CurrentUserData) {
@@ -288,7 +302,7 @@ export class RestaurantDeliveryZonesService {
       }
     }
 
-    return this.prisma.restaurantDeliveryZone.update({
+    const updated = await this.prisma.restaurantDeliveryZone.update({
       where: { id },
       data: {
         neighborhoodId: dto.neighborhoodId,
@@ -319,6 +333,9 @@ export class RestaurantDeliveryZonesService {
         },
       },
     });
+
+    await this.invalidateRestaurantDeliveryCache(zone.restaurant.id);
+    return updated;
   }
 
   async updateStatus(
@@ -343,7 +360,7 @@ export class RestaurantDeliveryZonesService {
 
     this.ensureCanManageRestaurant(zone.restaurant.ownerId, currentUser);
 
-    return this.prisma.restaurantDeliveryZone.update({
+    const updated = await this.prisma.restaurantDeliveryZone.update({
       where: { id },
       data: {
         isActive,
@@ -360,6 +377,9 @@ export class RestaurantDeliveryZonesService {
         },
       },
     });
+
+    await this.invalidateRestaurantDeliveryCache(zone.restaurantId);
+    return updated;
   }
 
   async remove(id: string, currentUser: CurrentUserData) {
@@ -384,9 +404,19 @@ export class RestaurantDeliveryZonesService {
       where: { id },
     });
 
+    await this.invalidateRestaurantDeliveryCache(zone.restaurantId);
     return {
       message: 'Zona de entrega removida com sucesso',
     };
+  }
+
+  private async invalidateRestaurantDeliveryCache(restaurantId: string) {
+    await this.cache.delMany([
+      CacheKeys.restaurantDetail(restaurantId),
+      CacheKeys.publicDeliveryZones(restaurantId),
+    ]);
+
+    await this.cache.delByPrefix(CachePrefixes.restaurantMenu(restaurantId));
   }
 
   private ensureCanManageRestaurant(
