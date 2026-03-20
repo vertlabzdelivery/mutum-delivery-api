@@ -9,6 +9,7 @@ import { OrdersModule } from './orders/orders.module';
 import { LocationsModule } from './locations/locations.module';
 import { AddressesModule } from './addresses/addresses.module';
 import { RestaurantDeliveryZonesModule } from './restaurant-delivery-zones/restaurant-delivery-zones.module';
+import { BillingModule } from './billing/billing.module';
 import { validateEnv } from './config/env.validation';
 
 @Module({
@@ -26,6 +27,7 @@ import { validateEnv } from './config/env.validation';
     LocationsModule,
     AddressesModule,
     RestaurantDeliveryZonesModule,
+    BillingModule,
   ],
 })
 export class AppModule {}

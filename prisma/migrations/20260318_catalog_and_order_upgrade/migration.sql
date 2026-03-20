@@ -12,9 +12,8 @@ CREATE TYPE "OptionGroupType" AS ENUM (
 );
 
 ALTER TABLE "Restaurant"
-  ADD COLUMN "bannerUrl" TEXT,
-  ADD COLUMN "minOrder" DECIMAL(10,2);
-
+  ADD COLUMN "bannerUrl" TEXT;
+  
 CREATE TABLE "MenuCategory" (
   "id" TEXT NOT NULL,
   "restaurantId" TEXT NOT NULL,
