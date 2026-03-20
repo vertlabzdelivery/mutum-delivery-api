@@ -1,16 +1,24 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { createClient, type RedisClientType } from 'redis';
+import { createClient } from 'redis';
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __mutumRedisClient: RedisClientType | undefined;
-  // eslint-disable-next-line no-var
-  var __mutumRedisConnectPromise: Promise<RedisClientType | null> | undefined;
-}
+type RedisLikeClient = {
+  isOpen: boolean;
+  connect(): Promise<void>;
+  on(event: 'error', listener: (error: Error) => void): unknown;
+  set(key: string, value: string, options?: { EX: number }): Promise<unknown>;
+  get(key: string): Promise<string | null>;
+  del(keys: string | string[]): Promise<unknown>;
+  scan(
+    cursor: string,
+    options: { MATCH: string; COUNT: number },
+  ): Promise<{ cursor: string; keys: string[] }>;
+};
 
 @Injectable()
 export class RedisCacheService implements OnModuleInit {
   private readonly logger = new Logger(RedisCacheService.name);
+  private static client: RedisLikeClient | null = null;
+  private static connectPromise: Promise<RedisLikeClient | null> | null = null;
 
   async onModuleInit() {
     await this.getClient();
@@ -143,29 +151,29 @@ export class RedisCacheService implements OnModuleInit {
     };
   }
 
-  private async getClient() {
+  private async getClient(): Promise<RedisLikeClient | null> {
     if (!this.isEnabled()) {
       return null;
     }
 
-    if (globalThis.__mutumRedisClient?.isOpen) {
-      return globalThis.__mutumRedisClient;
+    if (RedisCacheService.client?.isOpen) {
+      return RedisCacheService.client;
     }
 
-    if (globalThis.__mutumRedisConnectPromise) {
-      return globalThis.__mutumRedisConnectPromise;
+    if (RedisCacheService.connectPromise) {
+      return RedisCacheService.connectPromise;
     }
 
-    globalThis.__mutumRedisConnectPromise = this.connect();
+    RedisCacheService.connectPromise = this.connect();
 
     try {
-      return await globalThis.__mutumRedisConnectPromise;
+      return await RedisCacheService.connectPromise;
     } finally {
-      globalThis.__mutumRedisConnectPromise = undefined;
+      RedisCacheService.connectPromise = null;
     }
   }
 
-  private async connect() {
+  private async connect(): Promise<RedisLikeClient | null> {
     const redisUrl = process.env.REDIS_URL;
 
     if (!redisUrl) {
@@ -174,7 +182,7 @@ export class RedisCacheService implements OnModuleInit {
 
     const client = createClient({
       url: redisUrl,
-    });
+    }) as unknown as RedisLikeClient;
 
     client.on('error', (error) => {
       this.logger.error(`Redis error: ${error.message}`);
@@ -182,12 +190,13 @@ export class RedisCacheService implements OnModuleInit {
 
     try {
       await client.connect();
-      globalThis.__mutumRedisClient = client;
+      RedisCacheService.client = client;
       this.logger.log('Redis cache conectado');
       return client;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'erro desconhecido';
       this.logger.warn(`Redis indisponível. A API seguirá sem cache. Motivo: ${message}`);
+      RedisCacheService.client = null;
       return null;
     }
   }
