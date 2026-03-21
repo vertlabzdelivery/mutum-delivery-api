@@ -1,6 +1,6 @@
-# Mutum Delivery API
+# UaiPede API
 
-API principal do ecossistema Mutum Delivery, construída com NestJS + Prisma.
+API principal do ecossistema UaiPede, construída com NestJS + Prisma.
 
 ## Recursos
 - autenticação com access token e refresh token
@@ -141,3 +141,12 @@ REDIS_BACKOFF_MS=15000
 ```
 
 Se o seu provedor exigir TLS, troque para `rediss://` ou defina `REDIS_TLS=true`.
+
+
+## SMS de alta prioridade (APIBrasil)
+
+Para verificação por código, a API agora envia SMS com `tipo=sms-otp` por padrão.
+Você pode ajustar pela env:
+
+- `APIBRASIL_SMS_TYPE=sms-otp`
+- `APIBRASIL_SMS_OPERATOR=claro`

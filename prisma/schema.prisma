@@ -13,9 +13,13 @@ model User {
   email        String   @unique
   passwordHash String
   phone        String?
+  phoneVerifiedAt DateTime?
+  expoPushToken String?
+  expoPushTokenUpdatedAt DateTime?
   role         Role     @default(USER)
 
   addresses       UserAddress[]
+  phoneVerifications PhoneVerificationSession[]
   orders          Order[]
   restaurants     Restaurant[]
   orderStatusLogs OrderStatusHistory[]
@@ -78,7 +82,7 @@ model UserAddress {
   number          String
   complement      String?
   reference       String?
-  zipCode         String
+  zipCode         String?
   cityId          String
   neighborhoodId  String
   isDefault       Boolean  @default(false)
@@ -441,6 +445,47 @@ model OrderStatusHistory {
   @@index([createdAt])
 }
 
+
+model PhoneVerificationSession {
+  id           String   @id @default(uuid())
+  userId       String
+  phone        String
+  channel      VerificationChannel @default(SMS)
+  provider     VerificationProvider @default(APIBRASIL)
+  providerKey  String?
+  localCodeHash String?
+  status       VerificationStatus @default(PENDING)
+  attempts     Int      @default(0)
+  resendCount  Int      @default(1)
+  nextAllowedAt DateTime?
+  expiresAt    DateTime?
+  verifiedAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user         User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([phone])
+  @@index([status])
+}
+
+enum VerificationChannel {
+  SMS
+  WHATSAPP
+}
+
+enum VerificationProvider {
+  APIBRASIL
+  INTERNAL
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  EXPIRED
+  FAILED
+}
 enum Role {
   USER
   RESTAURANT

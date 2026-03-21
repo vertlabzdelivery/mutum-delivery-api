@@ -6,13 +6,17 @@ import {
 } from '@nestjs/common';
 import { OrderStatus, PaymentMethod, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { PushNotificationsService } from '../notifications/push-notifications.service';
 import type { CurrentUserData } from '../common/interfaces/current-user.interface';
 import { ORDER_STATUS_FLOW } from './constants/order-status-flow';
 import { CreateOrderDto } from './dto/create-order.dto';
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly pushNotificationsService: PushNotificationsService,
+  ) {}
 
   async quote(userId: string, dto: CreateOrderDto) {
     const draft = await this.buildOrderDraft(userId, dto);
@@ -32,6 +36,7 @@ export class OrdersService {
   }
 
   async create(userId: string, dto: CreateOrderDto) {
+    await this.ensureUserPhoneVerified(userId);
     const draft = await this.buildOrderDraft(userId, dto);
 
     return this.prisma.order.create({
@@ -58,7 +63,7 @@ export class OrdersService {
         deliveryDistrict: draft.address.neighborhood.name,
         deliveryCity: draft.address.city.name,
         deliveryState: draft.address.city.state.code,
-        deliveryZipCode: draft.address.zipCode,
+        deliveryZipCode: draft.address.zipCode ?? '',
         deliveryComplement: draft.address.complement,
         deliveryReference: draft.address.reference,
 
@@ -169,7 +174,7 @@ export class OrdersService {
 
     const now = new Date();
 
-    return this.prisma.order.update({
+    const updated = await this.prisma.order.update({
       where: { id },
       data: {
         status,
@@ -189,6 +194,46 @@ export class OrdersService {
       },
       include: this.orderInclude(true),
     });
+
+    await this.notifyOrderStatusChange(updated as any).catch(() => undefined);
+    return updated;
+  }
+
+
+  private async ensureUserPhoneVerified(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { phoneVerifiedAt: true },
+    });
+    if (!user?.phoneVerifiedAt) {
+      throw new BadRequestException('Seu telefone precisa ser verificado antes de finalizar o pedido.');
+    }
+  }
+
+  private async notifyOrderStatusChange(order: any) {
+    if (!order?.id) return;
+    const orderWithUser = await this.prisma.order.findUnique({
+      where: { id: order.id },
+      select: {
+        id: true,
+        status: true,
+        restaurant: { select: { name: true } },
+        user: { select: { expoPushToken: true } },
+      },
+    });
+    const expoPushToken = (orderWithUser as any)?.user?.expoPushToken;
+    if (!expoPushToken) return;
+    const statusMap: Record<string, string> = {
+      PENDING: 'Pedido recebido',
+      ACCEPTED: 'Pedido aceito',
+      PREPARING: 'Pedido em produção',
+      DELIVERY: 'Saiu para entrega',
+      DELIVERED: 'Pedido entregue',
+      CANCELED: 'Pedido cancelado',
+    };
+    const title = (orderWithUser as any)?.restaurant?.name || 'UaiPede';
+    const body = `${statusMap[(orderWithUser as any)?.status || ''] || 'Atualização no pedido'} • Pedido #${String(order.id).slice(0, 8)}`;
+    await this.pushNotificationsService.sendToExpoPushToken(expoPushToken, { title, body, data: { orderId: order.id, status: (orderWithUser as any)?.status } });
   }
 
   private async buildOrderDraft(userId: string, dto: CreateOrderDto) {

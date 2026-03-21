@@ -43,7 +43,7 @@ export class AddressesService {
           number: dto.number.trim(),
           complement: dto.complement?.trim(),
           reference: dto.reference?.trim(),
-          zipCode: dto.zipCode.trim(),
+          zipCode: dto.zipCode?.trim() || null,
           cityId: dto.cityId,
           neighborhoodId: dto.neighborhoodId,
           isDefault: dto.isDefault ?? hasAnyAddress === 0,
@@ -171,7 +171,7 @@ export class AddressesService {
             dto.complement !== undefined ? dto.complement.trim() : undefined,
           reference:
             dto.reference !== undefined ? dto.reference.trim() : undefined,
-          zipCode: dto.zipCode !== undefined ? dto.zipCode.trim() : undefined,
+          zipCode: dto.zipCode !== undefined ? (dto.zipCode?.trim() || null) : undefined,
           cityId: dto.cityId,
           neighborhoodId: dto.neighborhoodId,
           isDefault: dto.isDefault,

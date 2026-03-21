@@ -7,7 +7,7 @@ export class AppController {
 
   @Get()
   @Header('Content-Type', 'text/html; charset=utf-8')
-  getHello(): string {
+  async getHello(): Promise<string> {
     return this.appService.getHello();
   }
 

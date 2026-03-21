@@ -1,9 +1,4 @@
-import {
-  IsBoolean,
-  IsOptional,
-  IsString,
-  IsUUID,
-} from 'class-validator';
+import { IsBoolean, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
 
 export class CreateAddressDto {
   @IsOptional()
@@ -11,6 +6,7 @@ export class CreateAddressDto {
   label?: string;
 
   @IsString()
+  @MinLength(6)
   street: string;
 
   @IsString()
@@ -24,8 +20,9 @@ export class CreateAddressDto {
   @IsString()
   reference?: string;
 
+  @IsOptional()
   @IsString()
-  zipCode: string;
+  zipCode?: string;
 
   @IsUUID()
   cityId: string;

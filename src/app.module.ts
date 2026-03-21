@@ -15,6 +15,7 @@ import { CacheModule } from './cache/cache.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { UploadsModule } from './uploads/uploads.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { UploadsModule } from './uploads/uploads.module';
     RestaurantDeliveryZonesModule,
     BillingModule,
     UploadsModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
