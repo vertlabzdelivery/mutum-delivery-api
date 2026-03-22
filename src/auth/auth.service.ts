@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { Role, User } from '@prisma/client';
+import { Prisma, Role, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
@@ -32,24 +32,36 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
-    const existingUser = await this.usersService.findByEmail(dto.email);
-    if (existingUser) throw new BadRequestException('E-mail já cadastrado');
+    const email = dto.email.trim().toLowerCase();
+    const phone = this.normalizePhoneOrNull(dto.phone);
+
+    await this.ensureEmailAvailable(email);
+    await this.ensurePhoneAvailable(phone);
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
-    const user = await this.usersService.create({
-      name: dto.name.trim(),
-      email: dto.email.trim().toLowerCase(),
-      passwordHash,
-      phone: dto.phone?.trim(),
-      role: Role.USER,
-    });
 
-    return this.generateTokens(user as any);
+    try {
+      const user = await this.usersService.create({
+        name: dto.name.trim(),
+        email,
+        passwordHash,
+        phone: phone ?? undefined,
+        role: Role.USER,
+      });
+
+      return this.generateTokens(user as any);
+    } catch (error) {
+      this.handleUniqueConstraintError(error);
+      throw error;
+    }
   }
 
   async registerRestaurant(dto: RegisterRestaurantDto) {
-    const existingUser = await this.usersService.findByEmail(dto.email);
-    if (existingUser) throw new BadRequestException('E-mail já cadastrado');
+    const email = dto.email.trim().toLowerCase();
+    const ownerPhone = this.normalizePhoneOrNull(dto.ownerPhone);
+
+    await this.ensureEmailAvailable(email);
+    await this.ensurePhoneAvailable(ownerPhone);
 
     if (dto.cityId) {
       const city = await this.prisma.city.findUnique({ where: { id: dto.cityId } });
@@ -57,34 +69,40 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
-    const result = await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          name: dto.ownerName.trim(),
-          email: dto.email.trim().toLowerCase(),
-          passwordHash,
-          phone: dto.ownerPhone?.trim(),
-          role: Role.RESTAURANT,
-        },
+
+    try {
+      const result = await this.prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({
+          data: {
+            name: dto.ownerName.trim(),
+            email,
+            passwordHash,
+            phone: ownerPhone,
+            role: Role.RESTAURANT,
+          },
+        });
+
+        const restaurant = await tx.restaurant.create({
+          data: {
+            name: dto.restaurantName.trim(),
+            description: dto.restaurantDescription?.trim(),
+            logoUrl: dto.restaurantLogoUrl?.trim(),
+            phone: this.normalizePhoneOrNull(dto.restaurantPhone),
+            address: dto.address.trim(),
+            cityId: dto.cityId,
+            ownerId: user.id,
+          },
+        });
+
+        return { user, restaurant };
       });
 
-      const restaurant = await tx.restaurant.create({
-        data: {
-          name: dto.restaurantName.trim(),
-          description: dto.restaurantDescription?.trim(),
-          logoUrl: dto.restaurantLogoUrl?.trim(),
-          phone: dto.restaurantPhone?.trim(),
-          address: dto.address.trim(),
-          cityId: dto.cityId,
-          ownerId: user.id,
-        },
-      });
-
-      return { user, restaurant };
-    });
-
-    const tokens = await this.generateTokens(result.user as any);
-    return { ...tokens, restaurant: result.restaurant };
+      const tokens = await this.generateTokens(result.user as any);
+      return { ...tokens, restaurant: result.restaurant };
+    } catch (error) {
+      this.handleUniqueConstraintError(error);
+      throw error;
+    }
   }
 
   async login(dto: LoginDto) {
@@ -121,8 +139,10 @@ export class AuthService {
     const user = await this.usersService.findById(userId);
     if (!user) throw new UnauthorizedException('Usuário não encontrado');
 
-    const phone = String(dto.phone || user.phone || '').trim();
+    const phone = this.normalizePhoneOrNull(dto.phone || user.phone);
     if (!phone) throw new BadRequestException('Informe um telefone para receber o código.');
+
+    await this.ensurePhoneAvailable(phone, userId);
 
     const latestSession = await this.prisma.phoneVerificationSession.findFirst({
       where: { userId, status: { in: ['PENDING', 'FAILED', 'EXPIRED'] } },
@@ -138,85 +158,110 @@ export class AuthService {
     const recentCount = await this.prisma.phoneVerificationSession.count({
       where: { userId, createdAt: { gte: new Date(Date.now() - 1000 * 60 * 60 * 24) } },
     });
-    const resendCount = recentCount + 1;
-    const nextSeconds = RESEND_LOCKS_IN_SECONDS[Math.min(resendCount - 1, RESEND_LOCKS_IN_SECONDS.length - 1)];
+    const resendCount = Math.max(1, recentCount + 1);
+    const lockSeconds = RESEND_LOCKS_IN_SECONDS[Math.min(resendCount - 1, RESEND_LOCKS_IN_SECONDS.length - 1)];
+    const nextAllowedAt = new Date(Date.now() + lockSeconds * 1000);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
     const started = await this.smsService.startVerification(phone, dto.channel || 'SMS');
 
     const session = await this.prisma.phoneVerificationSession.create({
       data: {
-        userId: user.id,
+        userId,
         phone: started.normalizedPhone,
         channel: started.channel,
-        provider: 'INTERNAL',
+        provider: started.provider,
         providerKey: started.providerKey,
         localCodeHash: started.localCodeHash,
         status: 'PENDING',
         resendCount,
-        nextAllowedAt: new Date(Date.now() + nextSeconds * 1000),
-        expiresAt: new Date(Date.now() + 1000 * 60 * 10),
+        nextAllowedAt,
+        expiresAt,
       },
     });
 
-    if (phone !== user.phone) {
-      await this.prisma.user.update({
-        where: { id: user.id },
-        data: { phone, phoneVerifiedAt: null },
-      });
+    if (started.normalizedPhone !== user.phone) {
+      try {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: { phone: started.normalizedPhone, phoneVerifiedAt: null },
+        });
+      } catch (error) {
+        this.handleUniqueConstraintError(error);
+        throw error;
+      }
     }
 
     return {
-      verificationId: session.id,
-      phone,
-      normalizedPhone: started.normalizedPhone,
-      channel: started.channel,
       message: started.message,
-      nextRetryAt: session.nextAllowedAt,
+      sessionId: session.id,
+      phone: started.normalizedPhone,
+      channel: started.channel,
+      nextAllowedAt,
+      expiresAt,
       resendCount,
     };
   }
 
   async confirmPhoneVerification(userId: string, dto: ConfirmPhoneVerificationDto) {
     const session = await this.prisma.phoneVerificationSession.findFirst({
-      where: { id: dto.verificationId, userId },
+      where: { userId, status: 'PENDING' },
+      orderBy: { createdAt: 'desc' },
     });
-    if (!session) throw new NotFoundException('Solicitação de verificação não encontrada.');
-    if (session.status === 'VERIFIED') return { verified: true, message: 'Telefone já verificado.' };
+
+    if (!session) {
+      throw new NotFoundException('Nenhuma verificação pendente encontrada.');
+    }
+
     if (session.attempts >= MAX_VERIFICATION_ATTEMPTS) {
       await this.prisma.phoneVerificationSession.update({ where: { id: session.id }, data: { status: 'FAILED' } });
-      throw new BadRequestException('Limite de tentativas atingido. Solicite um novo código.');
+      throw new BadRequestException('Número máximo de tentativas excedido. Solicite um novo código.');
     }
+
     if (session.expiresAt && session.expiresAt.getTime() < Date.now()) {
       await this.prisma.phoneVerificationSession.update({ where: { id: session.id }, data: { status: 'EXPIRED' } });
       throw new BadRequestException('O código expirou. Solicite um novo código.');
     }
 
-    const ok = Boolean(session.localCodeHash) && this.smsService.hashCode(dto.code.trim()) === session.localCodeHash;
-    if (!ok) {
+    await this.ensurePhoneAvailable(session.phone, userId);
+
+    if (session.provider === 'INTERNAL') {
       const updated = await this.prisma.phoneVerificationSession.update({
         where: { id: session.id },
         data: { attempts: { increment: 1 } },
       });
-      if (updated.attempts >= MAX_VERIFICATION_ATTEMPTS) {
-        await this.prisma.phoneVerificationSession.update({ where: { id: session.id }, data: { status: 'FAILED' } });
+      const providedHash = this.smsService.hashCode(dto.code.trim());
+      if (!updated.localCodeHash || updated.localCodeHash !== providedHash) {
+        if (updated.attempts >= MAX_VERIFICATION_ATTEMPTS) {
+          await this.prisma.phoneVerificationSession.update({ where: { id: session.id }, data: { status: 'FAILED' } });
+        }
+        throw new BadRequestException('Código inválido.');
       }
-      throw new BadRequestException('Código inválido. Confira o SMS e tente novamente.');
     }
 
-    await this.prisma.$transaction([
-      this.prisma.phoneVerificationSession.update({
-        where: { id: session.id },
-        data: { status: 'VERIFIED', verifiedAt: new Date() },
-      }),
-      this.prisma.user.update({
-        where: { id: userId },
-        data: { phone: session.phone, phoneVerifiedAt: new Date() },
-      }),
-    ]);
+    const now = new Date();
+
+    try {
+      await this.prisma.$transaction([
+        this.prisma.phoneVerificationSession.update({
+          where: { id: session.id },
+          data: { status: 'VERIFIED', verifiedAt: now },
+        }),
+        this.prisma.user.update({
+          where: { id: userId },
+          data: { phone: session.phone, phoneVerifiedAt: now },
+        }),
+      ]);
+    } catch (error) {
+      this.handleUniqueConstraintError(error);
+      throw error;
+    }
 
     const refreshed = await this.usersService.findById(userId);
+
     return {
-      verified: true,
-      message: 'Telefone confirmado com sucesso.',
+      message: 'Telefone verificado com sucesso.',
+      verifiedAt: now,
       user: refreshed
         ? {
             id: refreshed.id,
@@ -260,6 +305,53 @@ export class AuthService {
       data: { expoPushToken: token, expoPushTokenUpdatedAt: token ? new Date() : null },
     });
     return { success: true, expoPushToken: updated.expoPushToken, expoPushTokenUpdatedAt: (updated as any).expoPushTokenUpdatedAt ?? null };
+  }
+
+  private normalizePhoneOrNull(phone?: string | null) {
+    const normalized = this.smsService.normalizePhone(String(phone || '').trim());
+    return normalized || null;
+  }
+
+  private async ensureEmailAvailable(email: string) {
+    const existingUser = await this.usersService.findByEmail(email);
+    if (existingUser) throw new BadRequestException('E-mail já cadastrado');
+  }
+
+  private async ensurePhoneAvailable(phone: string | null, ignoreUserId?: string) {
+    if (!phone) return;
+
+    const usersWithPhone = await this.prisma.user.findMany({
+      where: { phone: { not: null } },
+      select: { id: true, phone: true },
+    });
+
+    const alreadyUsed = usersWithPhone.some((user) => {
+      if (ignoreUserId && user.id === ignoreUserId) return false;
+      const normalizedExistingPhone = this.normalizePhoneOrNull(user.phone);
+      return normalizedExistingPhone === phone;
+    });
+
+    if (alreadyUsed) {
+      throw new BadRequestException('Telefone já cadastrado em outra conta');
+    }
+  }
+
+  private handleUniqueConstraintError(error: unknown): never | void {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+      return;
+    }
+
+    const target = Array.isArray(error.meta?.target) ? error.meta?.target.join(',') : String(error.meta?.target || '');
+
+    if (target.includes('email')) {
+      throw new BadRequestException('E-mail já cadastrado');
+    }
+
+    if (target.includes('phone')) {
+      throw new BadRequestException('Telefone já cadastrado em outra conta');
+    }
+
+    throw new BadRequestException('Já existe um cadastro com os dados informados');
   }
 
   private async generateTokens(user: User & Record<string, any>) {

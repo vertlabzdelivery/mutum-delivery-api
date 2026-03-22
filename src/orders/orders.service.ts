@@ -39,7 +39,7 @@ export class OrdersService {
     await this.ensureUserPhoneVerified(userId);
     const draft = await this.buildOrderDraft(userId, dto);
 
-    return this.prisma.order.create({
+    const createdOrder = await this.prisma.order.create({
       data: {
         userId,
         restaurantId: dto.restaurantId,
@@ -81,6 +81,9 @@ export class OrdersService {
       },
       include: this.orderInclude(),
     });
+
+    await this.notifyRestaurantNewOrder(createdOrder.id).catch(() => undefined);
+    return createdOrder;
   }
 
   async findMyOrders(userId: string) {
@@ -234,6 +237,47 @@ export class OrdersService {
     const title = (orderWithUser as any)?.restaurant?.name || 'UaiPede';
     const body = `${statusMap[(orderWithUser as any)?.status || ''] || 'Atualização no pedido'} • Pedido #${String(order.id).slice(0, 8)}`;
     await this.pushNotificationsService.sendToExpoPushToken(expoPushToken, { title, body, data: { orderId: order.id, status: (orderWithUser as any)?.status } });
+  }
+
+
+  private async notifyRestaurantNewOrder(orderId: string) {
+    if (!orderId) return;
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        total: true,
+        deliveryName: true,
+        restaurant: {
+          select: {
+            id: true,
+            name: true,
+            owner: {
+              select: {
+                expoPushToken: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const expoPushToken = order?.restaurant?.owner?.expoPushToken;
+    if (!expoPushToken) return;
+
+    const title = order.restaurant?.name || 'Novo pedido';
+    const body = `Novo pedido #${String(order.id).slice(0, 8)} • ${order.deliveryName} • R$ ${Number(order.total).toFixed(2).replace('.', ',')}`;
+
+    await this.pushNotificationsService.sendToExpoPushToken(expoPushToken, {
+      title,
+      body,
+      data: {
+        type: 'NEW_ORDER',
+        orderId: order.id,
+        restaurantId: order.restaurant?.id,
+      },
+    });
   }
 
   private async buildOrderDraft(userId: string, dto: CreateOrderDto) {
