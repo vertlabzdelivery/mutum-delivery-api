@@ -8,6 +8,7 @@ import {
 import { OrderStatus, PaymentMethod, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PushNotificationsService } from '../notifications/push-notifications.service';
+import { AblyRealtimeService } from '../notifications/ably-realtime.service';
 import type { CurrentUserData } from '../common/interfaces/current-user.interface';
 import { ORDER_STATUS_FLOW } from './constants/order-status-flow';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -19,6 +20,7 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly pushNotificationsService: PushNotificationsService,
+    private readonly ablyRealtimeService: AblyRealtimeService,
   ) {}
 
   async quote(userId: string, dto: CreateOrderDto) {
@@ -278,25 +280,36 @@ export class OrdersService {
       },
     });
 
+    if (!order?.restaurant?.id) return;
+
     const expoPushToken = order?.restaurant?.owner?.expoPushToken;
-    if (!expoPushToken) return;
+    const title = order?.restaurant?.name || 'Novo pedido';
+    const body = `Novo pedido #${String(order?.id).slice(0, 8)} • ${order?.deliveryName} • R$ ${Number(order?.total || 0).toFixed(2).replace('.', ',')}`;
 
-    const title = order.restaurant?.name || 'Novo pedido';
-    const body = `Novo pedido #${String(order.id).slice(0, 8)} • ${order.deliveryName} • R$ ${Number(order.total).toFixed(2).replace('.', ',')}`;
+    if (expoPushToken) {
+      const result = await this.pushNotificationsService.sendToExpoPushToken(expoPushToken, {
+        title,
+        body,
+        data: {
+          type: 'NEW_ORDER',
+          orderId: order.id,
+          restaurantId: order.restaurant?.id,
+        },
+      });
 
-    const result = await this.pushNotificationsService.sendToExpoPushToken(expoPushToken, {
-      title,
-      body,
-      data: {
-        type: 'NEW_ORDER',
-        orderId: order.id,
-        restaurantId: order.restaurant?.id,
-      },
-    });
-
-    if (!result.ok && !result.skipped) {
-      this.logger.warn(`Falha ao enviar push de novo pedido ${order.id}`);
+      if (!result.ok && !result.skipped) {
+        this.logger.warn(`Falha ao enviar push de novo pedido ${order.id}`);
+      }
     }
+
+    await this.ablyRealtimeService.publishNewOrder(order.restaurant.id, {
+      type: 'NEW_ORDER',
+      orderId: order.id,
+      shortOrderId: String(order.id).slice(0, 8),
+      restaurantName: order.restaurant?.name || 'Restaurante',
+      customerName: order.deliveryName,
+      total: Number(order.total),
+    });
   }
 
   private async buildOrderDraft(userId: string, dto: CreateOrderDto) {
