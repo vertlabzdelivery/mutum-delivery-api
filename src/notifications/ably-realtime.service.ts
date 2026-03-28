@@ -134,6 +134,7 @@ export class AblyRealtimeService {
         algorithm: 'HS256',
         secret: keySecret,
         header: {
+          alg: 'HS256',
           kid: keyName,
           typ: 'JWT',
         },

@@ -484,6 +484,8 @@ export class AuthService {
       where: {
         phone: { not: null },
         phoneVerifiedAt: { not: null },
+        isActive: true,
+        deletedAt: null,
       },
     });
 
@@ -504,7 +506,11 @@ export class AuthService {
     if (!phone) return;
 
     const usersWithPhone = await this.prisma.user.findMany({
-      where: { phone: { not: null } },
+      where: {
+        phone: { not: null },
+        isActive: true,
+        deletedAt: null,
+      },
       select: { id: true, phone: true },
     });
 
