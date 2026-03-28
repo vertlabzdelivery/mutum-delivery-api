@@ -16,6 +16,9 @@ import { RegisterDto } from './dto/register.dto';
 import { StartPhoneVerificationDto } from './dto/start-phone-verification.dto';
 import { ConfirmPhoneVerificationDto } from './dto/confirm-phone-verification.dto';
 import { RegisterPushTokenDto } from './dto/register-push-token.dto';
+import { StartPasswordRecoveryDto } from './dto/start-password-recovery.dto';
+import { ConfirmPasswordRecoveryDto } from './dto/confirm-password-recovery.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ApiBrasilSmsService } from './apibrasil-sms.service';
 
 const RESEND_LOCKS_IN_SECONDS = [60, 300, 600, 900, 1800, 3600];
@@ -135,6 +138,170 @@ export class AuthService {
     return { ...rest, isPhoneVerified: Boolean((user as any).phoneVerifiedAt) };
   }
 
+
+  async startPasswordRecovery(dto: StartPasswordRecoveryDto) {
+    const phone = this.normalizePhoneOrNull(dto.phone);
+    if (!phone) {
+      throw new BadRequestException('Informe um telefone válido para recuperar a senha.');
+    }
+
+    const user = await this.findUserByVerifiedPhone(phone);
+    if (!user) {
+      throw new NotFoundException('Nenhuma conta com telefone verificado foi encontrada para esse número.');
+    }
+
+    const latestSession = await this.prisma.passwordResetSession.findFirst({
+      where: {
+        userId: user.id,
+        status: { in: ['PENDING', 'FAILED', 'EXPIRED'] },
+        consumedAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (latestSession?.nextAllowedAt && latestSession.nextAllowedAt.getTime() > Date.now()) {
+      const remainingMs = latestSession.nextAllowedAt.getTime() - Date.now();
+      const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
+      throw new BadRequestException(`Aguarde ${remainingMinutes} min para solicitar outro código.`);
+    }
+
+    const recentCount = await this.prisma.passwordResetSession.count({
+      where: { userId: user.id, createdAt: { gte: new Date(Date.now() - 1000 * 60 * 60 * 24) } },
+    });
+    const resendCount = Math.max(1, recentCount + 1);
+    const lockSeconds = RESEND_LOCKS_IN_SECONDS[Math.min(resendCount - 1, RESEND_LOCKS_IN_SECONDS.length - 1)];
+    const nextAllowedAt = new Date(Date.now() + lockSeconds * 1000);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    const started = await this.smsService.startVerification(phone, 'SMS', 'PASSWORD_RESET');
+
+    const session = await this.prisma.passwordResetSession.create({
+      data: {
+        userId: user.id,
+        phone: started.normalizedPhone,
+        channel: started.channel,
+        provider: started.provider,
+        providerKey: started.providerKey,
+        localCodeHash: started.localCodeHash,
+        status: 'PENDING',
+        resendCount,
+        nextAllowedAt,
+        expiresAt,
+      },
+    });
+
+    return {
+      message: started.message,
+      sessionId: session.id,
+      phone: started.normalizedPhone,
+      channel: started.channel,
+      nextAllowedAt,
+      expiresAt,
+      resendCount,
+    };
+  }
+
+  async confirmPasswordRecovery(dto: ConfirmPasswordRecoveryDto) {
+    const session = await this.prisma.passwordResetSession.findUnique({
+      where: { id: dto.sessionId },
+    });
+
+    if (!session || session.status !== 'PENDING' || session.consumedAt) {
+      throw new NotFoundException('Nenhuma recuperação de senha pendente foi encontrada.');
+    }
+
+    if (session.attempts >= MAX_VERIFICATION_ATTEMPTS) {
+      await this.prisma.passwordResetSession.update({ where: { id: session.id }, data: { status: 'FAILED' } });
+      throw new BadRequestException('Número máximo de tentativas excedido. Solicite um novo código.');
+    }
+
+    if (session.expiresAt && session.expiresAt.getTime() < Date.now()) {
+      await this.prisma.passwordResetSession.update({ where: { id: session.id }, data: { status: 'EXPIRED' } });
+      throw new BadRequestException('O código expirou. Solicite um novo código.');
+    }
+
+    const updated = await this.prisma.passwordResetSession.update({
+      where: { id: session.id },
+      data: { attempts: { increment: 1 } },
+    });
+
+    const providedHash = this.smsService.hashCode(dto.code.trim());
+    if (!updated.localCodeHash || updated.localCodeHash !== providedHash) {
+      if (updated.attempts >= MAX_VERIFICATION_ATTEMPTS) {
+        await this.prisma.passwordResetSession.update({ where: { id: session.id }, data: { status: 'FAILED' } });
+      }
+      throw new BadRequestException('Código inválido.');
+    }
+
+    const now = new Date();
+    const resetToken = this.smsService.generateSecureToken(24);
+    const resetTokenTtlMinutes = Number(this.configService.get('PASSWORD_RESET_TOKEN_TTL_MINUTES') || 15);
+    const resetTokenExpiresAt = new Date(Date.now() + resetTokenTtlMinutes * 60 * 1000);
+
+    await this.prisma.passwordResetSession.update({
+      where: { id: session.id },
+      data: {
+        status: 'VERIFIED',
+        verifiedAt: now,
+        resetTokenHash: this.smsService.hashValue(resetToken),
+        resetTokenExpiresAt,
+      },
+    });
+
+    return {
+      message: 'Código confirmado. Agora você já pode cadastrar uma nova senha.',
+      resetToken,
+      resetTokenExpiresAt,
+    };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const resetTokenHash = this.smsService.hashValue(dto.resetToken.trim());
+
+    const session = await this.prisma.passwordResetSession.findFirst({
+      where: {
+        resetTokenHash,
+        status: 'VERIFIED',
+      },
+      include: { user: true },
+    });
+
+    if (!session || session.consumedAt) {
+      throw new BadRequestException('A autorização para redefinir a senha é inválida.');
+    }
+
+    if (session.resetTokenExpiresAt && session.resetTokenExpiresAt.getTime() < Date.now()) {
+      await this.prisma.passwordResetSession.update({
+        where: { id: session.id },
+        data: { status: 'EXPIRED' },
+      });
+      throw new BadRequestException('A autorização expirou. Solicite um novo código.');
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, 10);
+    const consumedAt = new Date();
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: session.userId },
+        data: { passwordHash },
+      }),
+      this.prisma.passwordResetSession.update({
+        where: { id: session.id },
+        data: {
+          status: 'USED',
+          consumedAt,
+        },
+      }),
+    ]);
+
+    return {
+      message: 'Senha alterada com sucesso. Faça login com a sua nova senha.',
+      updatedAt: consumedAt,
+      userId: session.userId,
+    };
+  }
+
   async startPhoneVerification(userId: string, dto: StartPhoneVerificationDto) {
     const user = await this.usersService.findById(userId);
     if (!user) throw new UnauthorizedException('Usuário não encontrado');
@@ -204,10 +371,14 @@ export class AuthService {
   }
 
   async confirmPhoneVerification(userId: string, dto: ConfirmPhoneVerificationDto) {
-    const session = await this.prisma.phoneVerificationSession.findFirst({
-      where: { userId, status: 'PENDING' },
-      orderBy: { createdAt: 'desc' },
-    });
+    const session = dto.verificationId
+      ? await this.prisma.phoneVerificationSession.findFirst({
+          where: { id: dto.verificationId, userId, status: 'PENDING' },
+        })
+      : await this.prisma.phoneVerificationSession.findFirst({
+          where: { userId, status: 'PENDING' },
+          orderBy: { createdAt: 'desc' },
+        });
 
     if (!session) {
       throw new NotFoundException('Nenhuma verificação pendente encontrada.');
@@ -305,6 +476,18 @@ export class AuthService {
       data: { expoPushToken: token, expoPushTokenUpdatedAt: token ? new Date() : null },
     });
     return { success: true, expoPushToken: updated.expoPushToken, expoPushTokenUpdatedAt: (updated as any).expoPushTokenUpdatedAt ?? null };
+  }
+
+
+  private async findUserByVerifiedPhone(phone: string) {
+    const usersWithPhone = await this.prisma.user.findMany({
+      where: {
+        phone: { not: null },
+        phoneVerifiedAt: { not: null },
+      },
+    });
+
+    return usersWithPhone.find((user) => this.normalizePhoneOrNull(user.phone) === phone) || null;
   }
 
   private normalizePhoneOrNull(phone?: string | null) {

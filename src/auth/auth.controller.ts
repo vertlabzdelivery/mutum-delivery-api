@@ -10,6 +10,9 @@ import { RegisterRestaurantDto } from './dto/register-restaurant.dto';
 import { StartPhoneVerificationDto } from './dto/start-phone-verification.dto';
 import { ConfirmPhoneVerificationDto } from './dto/confirm-phone-verification.dto';
 import { RegisterPushTokenDto } from './dto/register-push-token.dto';
+import { StartPasswordRecoveryDto } from './dto/start-password-recovery.dto';
+import { ConfirmPasswordRecoveryDto } from './dto/confirm-password-recovery.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -19,6 +22,9 @@ export class AuthController {
   @Post('register-restaurant') registerRestaurant(@Body() dto: RegisterRestaurantDto) { return this.authService.registerRestaurant(dto); }
   @Post('login') login(@Body() dto: LoginDto) { return this.authService.login(dto); }
   @Post('refresh') refresh(@Body() dto: RefreshTokenDto) { return this.authService.refreshToken(dto.refreshToken); }
+  @Post('password-recovery/start') startPasswordRecovery(@Body() dto: StartPasswordRecoveryDto) { return this.authService.startPasswordRecovery(dto); }
+  @Post('password-recovery/confirm') confirmPasswordRecovery(@Body() dto: ConfirmPasswordRecoveryDto) { return this.authService.confirmPasswordRecovery(dto); }
+  @Post('password-recovery/reset') resetPassword(@Body() dto: ResetPasswordDto) { return this.authService.resetPassword(dto); }
 
   @UseGuards(JwtAuthGuard)
   @Get('me') me(@CurrentUser() user: CurrentUserData) { return this.authService.me(user.userId); }

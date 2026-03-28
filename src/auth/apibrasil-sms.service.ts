@@ -18,14 +18,22 @@ export class ApiBrasilSmsService {
   }
 
   hashCode(code: string) {
-    return crypto.createHash('sha256').update(code).digest('hex');
+    return this.hashValue(code);
+  }
+
+  hashValue(value: string) {
+    return crypto.createHash('sha256').update(value).digest('hex');
+  }
+
+  generateSecureToken(size = 32) {
+    return crypto.randomBytes(size).toString('hex');
   }
 
   generateCode() {
     return String(Math.floor(100000 + Math.random() * 900000));
   }
 
-  async startVerification(phone: string, preferredChannel?: string) {
+  async startVerification(phone: string, preferredChannel?: string, purpose: 'PHONE_VERIFICATION' | 'PASSWORD_RESET' = 'PHONE_VERIFICATION') {
     const normalizedPhone = this.normalizePhone(phone);
     if (!normalizedPhone) throw new Error('Telefone inválido para verificação.');
 
@@ -33,10 +41,10 @@ export class ApiBrasilSmsService {
     if (channel === 'WHATSAPP') {
       this.logger.warn('WhatsApp ainda não configurado na integração SMS. Seguindo com SMS.');
     }
-    return this.startSmsVerification(normalizedPhone);
+    return this.startSmsVerification(normalizedPhone, purpose);
   }
 
-  private async startSmsVerification(normalizedPhone: string) {
+  private async startSmsVerification(normalizedPhone: string, purpose: 'PHONE_VERIFICATION' | 'PASSWORD_RESET') {
     const bearer = String(this.configService.get('APIBRASIL_BEARER_TOKEN') || '').trim();
     if (!bearer) {
       throw new Error('APIBRASIL_BEARER_TOKEN não configurado.');
@@ -46,7 +54,9 @@ export class ApiBrasilSmsService {
     const brand = this.configService.get<string>('APP_BRAND_NAME', 'UaiPede');
     const smsType = String(this.configService.get('APIBRASIL_SMS_TYPE', 'sms-otp') || 'sms-otp').trim() || 'sms-otp';
     const smsOperator = String(this.configService.get('APIBRASIL_SMS_OPERATOR', 'claro') || 'claro').trim() || 'claro';
-    const message = `${brand}: código de verificação ${code}. Use este código para confirmar seu telefone e concluir sua solicitação. Não compartilhe este código com ninguém.`;
+    const message = purpose === 'PASSWORD_RESET'
+      ? `${brand}: código para redefinir sua senha ${code}. Use este código para continuar a recuperação de acesso. Não compartilhe este código com ninguém.`
+      : `${brand}: código de verificação ${code}. Use este código para confirmar seu telefone e concluir sua solicitação. Não compartilhe este código com ninguém.`;
 
     const payload = {
       tipo: smsType,
@@ -79,7 +89,9 @@ export class ApiBrasilSmsService {
       providerKey: json?.id || json?.requestId || json?.data?.id || null,
       localCodeHash: this.hashCode(code),
       normalizedPhone,
-      message: 'Enviamos um código por SMS de alta prioridade para confirmar seu telefone.',
+      message: purpose === 'PASSWORD_RESET'
+        ? 'Enviamos um código por SMS para continuar a recuperação da sua senha.'
+        : 'Enviamos um código por SMS de alta prioridade para confirmar seu telefone.',
     };
   }
 }
