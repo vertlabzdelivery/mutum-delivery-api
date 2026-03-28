@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { OrderStatus, PaymentMethod, Prisma, Role } from '@prisma/client';
@@ -13,6 +14,8 @@ import { CreateOrderDto } from './dto/create-order.dto';
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly pushNotificationsService: PushNotificationsService,
@@ -82,7 +85,7 @@ export class OrdersService {
       include: this.orderInclude(),
     });
 
-    await this.notifyRestaurantNewOrder(createdOrder.id).catch(() => undefined);
+    await this.notifyRestaurantNewOrder(createdOrder.id);
     return createdOrder;
   }
 
@@ -198,7 +201,7 @@ export class OrdersService {
       include: this.orderInclude(true),
     });
 
-    await this.notifyOrderStatusChange(updated as any).catch(() => undefined);
+    await this.notifyOrderStatusChange(updated as any);
     return updated;
   }
 
@@ -236,7 +239,19 @@ export class OrdersService {
     };
     const title = (orderWithUser as any)?.restaurant?.name || 'UaiPede';
     const body = `${statusMap[(orderWithUser as any)?.status || ''] || 'Atualização no pedido'} • Pedido #${String(order.id).slice(0, 8)}`;
-    await this.pushNotificationsService.sendToExpoPushToken(expoPushToken, { title, body, data: { orderId: order.id, status: (orderWithUser as any)?.status } });
+    const result = await this.pushNotificationsService.sendToExpoPushToken(expoPushToken, {
+      title,
+      body,
+      data: {
+        type: 'ORDER_STATUS_CHANGED',
+        orderId: order.id,
+        status: (orderWithUser as any)?.status,
+      },
+    });
+
+    if (!result.ok && !result.skipped) {
+      this.logger.warn(`Falha ao enviar push de status do pedido ${order.id}`);
+    }
   }
 
 
@@ -269,7 +284,7 @@ export class OrdersService {
     const title = order.restaurant?.name || 'Novo pedido';
     const body = `Novo pedido #${String(order.id).slice(0, 8)} • ${order.deliveryName} • R$ ${Number(order.total).toFixed(2).replace('.', ',')}`;
 
-    await this.pushNotificationsService.sendToExpoPushToken(expoPushToken, {
+    const result = await this.pushNotificationsService.sendToExpoPushToken(expoPushToken, {
       title,
       body,
       data: {
@@ -278,6 +293,10 @@ export class OrdersService {
         restaurantId: order.restaurant?.id,
       },
     });
+
+    if (!result.ok && !result.skipped) {
+      this.logger.warn(`Falha ao enviar push de novo pedido ${order.id}`);
+    }
   }
 
   private async buildOrderDraft(userId: string, dto: CreateOrderDto) {
