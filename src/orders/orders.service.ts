@@ -227,6 +227,15 @@ export class OrdersService {
     });
 
     await this.notifyOrderStatusChange(updated as any);
+
+    // Publica evento Ably para o painel do restaurante atualizar em tempo real
+    await this.ablyRealtimeService.publishOrderStatusChanged(order.restaurant.id, {
+      orderId: id,
+      previousStatus: order.status,
+      newStatus: status,
+      note: note?.trim() ?? null,
+    });
+
     return updated;
   }
 

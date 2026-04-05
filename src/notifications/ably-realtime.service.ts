@@ -57,7 +57,15 @@ export class AblyRealtimeService {
 
   async publishNewOrder(restaurantId: string, payload: Record<string, unknown>) {
     if (!this.isEnabled() || !restaurantId) return;
+    await this.publishToChannel(restaurantId, 'new-order', payload);
+  }
 
+  async publishOrderStatusChanged(restaurantId: string, payload: { orderId: string; previousStatus: string; newStatus: string; note?: string | null }) {
+    if (!this.isEnabled() || !restaurantId) return;
+    await this.publishToChannel(restaurantId, 'order-status-changed', payload);
+  }
+
+  private async publishToChannel(restaurantId: string, eventName: string, payload: Record<string, unknown>) {
     try {
       const response = await fetch(
         `${this.restBaseUrl}/channels/${encodeURIComponent(this.getRestaurantOrdersChannelName(restaurantId))}/messages`,
@@ -68,7 +76,7 @@ export class AblyRealtimeService {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            name: 'new-order',
+            name: eventName,
             data: {
               ...payload,
               restaurantId,
@@ -84,7 +92,7 @@ export class AblyRealtimeService {
       }
     } catch (error) {
       this.logger.warn(
-        `Falha ao publicar evento Ably do restaurante ${restaurantId}: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
+        `Falha ao publicar evento Ably '${eventName}' do restaurante ${restaurantId}: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
       );
     }
   }

@@ -67,6 +67,8 @@ export class OrdersController {
     @Body() dto: UpdateOrderStatusDto,
     @CurrentUser() user: CurrentUserData,
   ) {
-    return this.ordersService.updateStatus(id, dto.status, user, dto.note);
+    // Usa cancelReason como note quando for cancelamento
+    const note = dto.cancelReason || dto.note;
+    return this.ordersService.updateStatus(id, dto.status, user, note);
   }
 }
