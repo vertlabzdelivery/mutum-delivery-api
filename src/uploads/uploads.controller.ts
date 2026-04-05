@@ -29,9 +29,7 @@ export class UploadsController {
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),
-      limits: {
-        fileSize: uploadLimitBytes,
-      },
+      limits: { fileSize: uploadLimitBytes },
     }),
   )
   uploadRestaurantLogo(
@@ -39,20 +37,14 @@ export class UploadsController {
     @Body('restaurantId', new ParseUUIDPipe()) restaurantId: string,
     @CurrentUser() currentUser: CurrentUserData,
   ) {
-    return this.uploadsService.uploadRestaurantLogo(
-      file,
-      restaurantId,
-      currentUser,
-    );
+    return this.uploadsService.uploadRestaurantLogo(file, restaurantId, currentUser);
   }
 
   @Post('menu-item-image')
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),
-      limits: {
-        fileSize: uploadLimitBytes,
-      },
+      limits: { fileSize: uploadLimitBytes },
     }),
   )
   uploadMenuItemImage(
@@ -61,5 +53,17 @@ export class UploadsController {
     @CurrentUser() currentUser: CurrentUserData,
   ) {
     return this.uploadsService.uploadMenuItemImage(file, restaurantId, currentUser);
+  }
+
+  @Roles(Role.ADMIN)
+  @Post('store-category-icon')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: uploadLimitBytes },
+    }),
+  )
+  uploadStoreCategoryIcon(@UploadedFile() file: any) {
+    return this.uploadsService.uploadStoreCategoryIcon(file);
   }
 }

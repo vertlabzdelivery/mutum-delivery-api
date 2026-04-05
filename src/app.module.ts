@@ -18,6 +18,7 @@ import { UploadsModule } from './uploads/uploads.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ObservabilityModule } from './observability/observability.module';
 import { SecurityModule } from './security/security.module';
+import { StoreCategoriesModule } from './store-categories/store-categories.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { SecurityModule } from './security/security.module';
     NotificationsModule,
     SecurityModule,
     ObservabilityModule,
+    StoreCategoriesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

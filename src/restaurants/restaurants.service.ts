@@ -107,13 +107,17 @@ export class RestaurantsService {
       },
       include: {
         hours: { orderBy: [{ dayOfWeek: 'asc' }, { openTime: 'asc' }] },
-        city: {
-          include: {
-            state: true,
-          },
-        },
+        city: { include: { state: true } },
         menuCategories: {
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
+        storeCategories: {
+          include: {
+            storeCategory: {
+              select: { id: true, name: true, iconUrl: true, sortOrder: true },
+            },
+          },
+          orderBy: { storeCategory: { sortOrder: 'asc' } },
         },
       },
     });
@@ -306,14 +310,35 @@ export class RestaurantsService {
           isActive: true,
         },
       },
+      storeCategories: {
+        include: {
+          storeCategory: {
+            select: {
+              id: true,
+              name: true,
+              iconUrl: true,
+              sortOrder: true,
+            },
+          },
+        },
+        orderBy: {
+          storeCategory: { sortOrder: 'asc' },
+        },
+      },
     };
   }
 
   private serializeRestaurant<T extends Record<string, any>>(restaurant: T) {
     const openingStatus = this.getRestaurantOpeningStatus(restaurant.hours || []);
+    const storeCategories = (restaurant.storeCategories || []).map(
+      (entry: any) => entry.storeCategory,
+    );
+    const categoryNames = storeCategories.map((cat: any) => cat.name);
 
     return {
       ...restaurant,
+      storeCategories,
+      categoryNames,
       isOpenNow: restaurant.isActive === false ? false : openingStatus.isOpen,
       acceptsOrdersNow: restaurant.isActive === false ? false : openingStatus.isOpen,
       openingStatusLabel:

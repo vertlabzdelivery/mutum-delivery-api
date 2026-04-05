@@ -121,12 +121,13 @@ model Restaurant {
   owner         User     @relation(fields: [ownerId], references: [id])
   city          City?    @relation(fields: [cityId], references: [id])
 
-  menuCategories MenuCategory[]
-  menuItems      MenuItem[]
-  orders         Order[]
-  hours          OpeningHour[]
-  deliveryZones  RestaurantDeliveryZone[]
-  billingCycles  RestaurantBillingCycle[]
+  menuCategories  MenuCategory[]
+  menuItems       MenuItem[]
+  orders          Order[]
+  hours           OpeningHour[]
+  deliveryZones   RestaurantDeliveryZone[]
+  billingCycles   RestaurantBillingCycle[]
+  storeCategories RestaurantStoreCategory[]
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -134,6 +135,36 @@ model Restaurant {
   @@index([ownerId])
   @@index([cityId])
   @@index([isActive])
+}
+
+model StoreCategory {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  iconUrl   String?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+
+  restaurants RestaurantStoreCategory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([sortOrder])
+}
+
+model RestaurantStoreCategory {
+  restaurantId    String
+  storeCategoryId String
+
+  restaurant    Restaurant    @relation(fields: [restaurantId], references: [id])
+  storeCategory StoreCategory @relation(fields: [storeCategoryId], references: [id])
+
+  assignedAt DateTime @default(now())
+
+  @@id([restaurantId, storeCategoryId])
+  @@index([restaurantId])
+  @@index([storeCategoryId])
 }
 
 model OpeningHour {

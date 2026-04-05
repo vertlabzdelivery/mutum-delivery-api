@@ -36,7 +36,6 @@ export class UploadsService {
     const restaurant = await this.ensureRestaurantAccess(restaurantId, currentUser);
 
     return this.uploadImage(file, {
-      restaurantId,
       maxBytes: this.getBytesEnv('BLOB_MAX_RESTAURANT_LOGO_BYTES', 716_800),
       pathname: `restaurants/${restaurant.id}/logo/${this.buildFileName(
         restaurant.name || 'restaurante',
@@ -53,7 +52,6 @@ export class UploadsService {
     await this.ensureRestaurantAccess(restaurantId, currentUser);
 
     return this.uploadImage(file, {
-      restaurantId,
       maxBytes: this.getBytesEnv('BLOB_MAX_MENU_ITEM_IMAGE_BYTES', 921_600),
       pathname: `restaurants/${restaurantId}/menu/${this.buildFileName(
         'item',
@@ -62,9 +60,46 @@ export class UploadsService {
     });
   }
 
+  async uploadStoreCategoryIcon(file: MulterLikeFile | undefined) {
+    this.ensureBlobReady();
+
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Selecione uma imagem para enviar.');
+    }
+
+    const mimetype = String(file.mimetype || '').toLowerCase();
+    const size = Number(file.size || file.buffer.length || 0);
+
+    if (!this.allowedMimeTypes.has(mimetype)) {
+      throw new BadRequestException('Formato inválido. Envie JPG, PNG ou WEBP.');
+    }
+
+    const maxBytes = this.getBytesEnv('BLOB_MAX_STORE_CATEGORY_ICON_BYTES', 307_200);
+    if (size > maxBytes) {
+      throw new BadRequestException(
+        `Imagem muito pesada. Limite: ${this.formatKilobytes(maxBytes)}.`,
+      );
+    }
+
+    const pathname = `store-categories/icons/${this.buildFileName('icon', mimetype)}`;
+
+    try {
+      const blob = await put(pathname, file.buffer, {
+        access: 'public',
+        contentType: mimetype,
+      });
+      return { url: blob.url, pathname: blob.pathname, contentType: mimetype, size };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'erro desconhecido';
+      throw new InternalServerErrorException(
+        `Não foi possível enviar o ícone para o Blob. ${message}`,
+      );
+    }
+  }
+
   private async uploadImage(
     file: MulterLikeFile | undefined,
-    options: { restaurantId: string; maxBytes: number; pathname: string },
+    options: { maxBytes: number; pathname: string },
   ) {
     this.ensureBlobReady();
 
@@ -104,7 +139,6 @@ export class UploadsService {
         pathname: blob.pathname,
         contentType: mimetype,
         size,
-        restaurantId: options.restaurantId,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'erro desconhecido';

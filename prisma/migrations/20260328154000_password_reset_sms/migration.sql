@@ -1,6 +1,12 @@
 -- CreateEnum
 CREATE TYPE "PasswordResetStatus" AS ENUM ('PENDING', 'VERIFIED', 'USED', 'EXPIRED', 'FAILED');
 
+-- CreateEnum
+CREATE TYPE "VerificationChannel" AS ENUM ('SMS');
+
+-- CreateEnum
+CREATE TYPE "VerificationProvider" AS ENUM ('INTERNAL');
+
 -- CreateTable
 CREATE TABLE "PasswordResetSession" (
     "id" TEXT NOT NULL,
@@ -32,4 +38,5 @@ CREATE INDEX "PasswordResetSession_phone_idx" ON "PasswordResetSession"("phone")
 CREATE INDEX "PasswordResetSession_status_idx" ON "PasswordResetSession"("status");
 
 -- AddForeignKey
-ALTER TABLE "PasswordResetSession" ADD CONSTRAINT "PasswordResetSession_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PasswordResetSession" ADD CONSTRAINT "PasswordResetSession_userId_fkey"
+FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
