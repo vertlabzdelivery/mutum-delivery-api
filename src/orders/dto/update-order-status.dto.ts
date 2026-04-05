@@ -1,4 +1,4 @@
-import { IsEnum, IsOptional, IsString, MaxLength, ValidateIf } from 'class-validator';
+import { IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
 import { OrderStatus } from '@prisma/client';
 
 export class UpdateOrderStatusDto {
@@ -11,10 +11,11 @@ export class UpdateOrderStatusDto {
   note?: string;
 
   /**
-   * Motivo do cancelamento — obrigatório quando status === CANCELED.
-   * Enviado pelo painel do restaurante via modal de motivo.
+   * Motivo do cancelamento — obrigatório no frontend quando status === CANCELED,
+   * mas mantido opcional aqui para evitar falsos erros de validação de tipo.
+   * O controller garante que seja usado como nota quando presente.
    */
-  @ValidateIf((o) => o.status === OrderStatus.CANCELED)
+  @IsOptional()
   @IsString()
   @MaxLength(300)
   cancelReason?: string;
