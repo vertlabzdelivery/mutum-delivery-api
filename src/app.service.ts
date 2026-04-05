@@ -1,9 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { RedisCacheService } from './cache/cache.service';
+import { PrismaService } from './prisma/prisma.service';
 
 @Injectable()
 export class AppService {
-  constructor(private readonly cache: RedisCacheService) {}
+  constructor(
+    private readonly cache: RedisCacheService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   private getIntegrationStatus() {
     const redisEnabled = Boolean(process.env.REDIS_URL) && process.env.CACHE_ENABLED !== 'false';
@@ -20,9 +24,11 @@ export class AppService {
 
   async getHello(): Promise<string> {
     const cache = await this.cache.getStatus();
+    const db = await this.getDatabaseStatus();
     const integrations = this.getIntegrationStatus();
     const items = [
       { label: 'API', ok: true, detail: 'Operando normalmente' },
+      { label: 'Banco', ok: db.ok, detail: db.ok ? `Conectado • ${db.latencyMs}ms` : `Falha • ${db.error ?? 'sem detalhe'}` },
       { label: 'Redis / Cache', ok: cache.enabled && cache.connected, detail: cache.enabled ? (cache.connected ? 'Conectado e pronto' : 'Configurado, mas sem conexão') : 'Desativado' },
       { label: 'Blob', ok: integrations.blob, detail: integrations.blob ? 'Upload de imagens habilitado' : 'Token ausente' },
       { label: 'SMS / APIBrasil', ok: integrations.sms, detail: integrations.sms ? 'Verificação por SMS disponível' : 'Bearer token ausente' },
@@ -63,7 +69,7 @@ export class AppService {
       <div class="mark">UP</div>
       <div>
         <h1>UaiPede API</h1>
-        <p>Base operacional do app, web e painéis. Esta página resume rapidamente o estado da aplicação e das integrações principais.</p>
+        <p>Base operacional do app, web e painéis. Esta página resume rapidamente o estado da aplicação, banco e integrações.</p>
       </div>
     </section>
     <div class="links">
@@ -78,12 +84,32 @@ export class AppService {
   }
 
   async getHealth() {
+    const database = await this.getDatabaseStatus();
     return {
-      ok: true,
+      ok: database.ok,
       service: 'uai-pede-api',
       timestamp: new Date().toISOString(),
       cache: await this.cache.getStatus(),
+      database,
       integrations: this.getIntegrationStatus(),
     };
+  }
+
+  private async getDatabaseStatus() {
+    const startedAt = Date.now();
+
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+      return {
+        ok: true,
+        latencyMs: Date.now() - startedAt,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : 'Erro desconhecido',
+      };
+    }
   }
 }

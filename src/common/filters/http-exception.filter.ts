@@ -5,13 +5,18 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
+import type { Request, Response } from 'express';
+import type { RequestContextData } from '../interfaces/request-context.interface';
+import { StructuredLoggerService } from '../../observability/structured-logger.service';
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
+  constructor(private readonly logger: StructuredLoggerService) {}
+
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
-    const request = ctx.getRequest();
-    const response = ctx.getResponse();
+    const request = ctx.getRequest<Request & RequestContextData>();
+    const response = ctx.getResponse<Response>();
 
     const isHttpException = exception instanceof HttpException;
 
@@ -37,11 +42,31 @@ export class HttpExceptionFilter implements ExceptionFilter {
       error = responseObj.error ?? error;
     }
 
+    const logPayload = {
+      requestId: request.requestId,
+      method: request.method,
+      path: request.originalUrl ?? request.url,
+      clientIp: request.clientIp,
+      statusCode: status,
+      error,
+      message,
+    };
+
+    if (status >= 500) {
+      this.logger.error('http.exception', {
+        ...logPayload,
+        stack: exception instanceof Error ? exception.stack : undefined,
+      });
+    } else {
+      this.logger.warn('http.rejection', logPayload);
+    }
+
     response.status(status).json({
       success: false,
       statusCode: status,
       path: request.url,
       timestamp: new Date().toISOString(),
+      requestId: request.requestId,
       error,
       message,
     });

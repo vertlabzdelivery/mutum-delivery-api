@@ -39,6 +39,15 @@ export class RedisCacheService implements OnModuleInit {
     return fallbackSeconds;
   }
 
+  async get<T>(key: string): Promise<T | null> {
+    const cached = await this.getParsed<T>(key);
+    if (!cached.hit) {
+      return null;
+    }
+
+    return cached.value;
+  }
+
   async getOrSet<T>(
     key: string,
     ttlSeconds: number,

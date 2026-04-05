@@ -2,7 +2,6 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
-  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { OrderStatus, PaymentMethod, Prisma, Role } from '@prisma/client';
@@ -12,15 +11,15 @@ import { AblyRealtimeService } from '../notifications/ably-realtime.service';
 import type { CurrentUserData } from '../common/interfaces/current-user.interface';
 import { ORDER_STATUS_FLOW } from './constants/order-status-flow';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { StructuredLoggerService } from '../observability/structured-logger.service';
 
 @Injectable()
 export class OrdersService {
-  private readonly logger = new Logger(OrdersService.name);
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly pushNotificationsService: PushNotificationsService,
     private readonly ablyRealtimeService: AblyRealtimeService,
+    private readonly logger: StructuredLoggerService,
   ) {}
 
   async quote(userId: string, dto: CreateOrderDto) {
@@ -41,54 +40,78 @@ export class OrdersService {
   }
 
   async create(userId: string, dto: CreateOrderDto) {
-    await this.ensureUserPhoneVerified(userId);
-    const draft = await this.buildOrderDraft(userId, dto);
+    const startedAt = Date.now();
 
-    const createdOrder = await this.prisma.order.create({
-      data: {
-        userId,
-        restaurantId: dto.restaurantId,
-        userAddressId: dto.userAddressId,
-        neighborhoodName: draft.address.neighborhood.name,
-        paymentMethod: dto.paymentMethod,
-        status: OrderStatus.PENDING,
-        subtotal: draft.subtotal,
-        deliveryFee: draft.deliveryFee,
-        total: draft.total,
-        notes: dto.notes?.trim(),
-        cashChangeFor:
-          dto.cashChangeFor !== undefined
-            ? new Prisma.Decimal(dto.cashChangeFor)
-            : null,
+    try {
+      await this.ensureUserPhoneVerified(userId);
+      const draft = await this.buildOrderDraft(userId, dto);
 
-        deliveryName: dto.deliveryName.trim(),
-        deliveryPhone: dto.deliveryPhone.trim(),
-        deliveryStreet: draft.address.street,
-        deliveryNumber: draft.address.number,
-        deliveryDistrict: draft.address.neighborhood.name,
-        deliveryCity: draft.address.city.name,
-        deliveryState: draft.address.city.state.code,
-        deliveryZipCode: draft.address.zipCode ?? '',
-        deliveryComplement: draft.address.complement,
-        deliveryReference: draft.address.reference,
+      const createdOrder = await this.prisma.order.create({
+        data: {
+          userId,
+          restaurantId: dto.restaurantId,
+          userAddressId: dto.userAddressId,
+          neighborhoodName: draft.address.neighborhood.name,
+          paymentMethod: dto.paymentMethod,
+          status: OrderStatus.PENDING,
+          subtotal: draft.subtotal,
+          deliveryFee: draft.deliveryFee,
+          total: draft.total,
+          notes: dto.notes?.trim(),
+          cashChangeFor:
+            dto.cashChangeFor !== undefined
+              ? new Prisma.Decimal(dto.cashChangeFor)
+              : null,
 
-        items: {
-          create: draft.orderItemsCreateData,
-        },
-        statusHistory: {
-          create: {
-            fromStatus: null,
-            toStatus: OrderStatus.PENDING,
-            changedByUserId: userId,
-            note: 'Pedido criado',
+          deliveryName: dto.deliveryName.trim(),
+          deliveryPhone: dto.deliveryPhone.trim(),
+          deliveryStreet: draft.address.street,
+          deliveryNumber: draft.address.number,
+          deliveryDistrict: draft.address.neighborhood.name,
+          deliveryCity: draft.address.city.name,
+          deliveryState: draft.address.city.state.code,
+          deliveryZipCode: draft.address.zipCode ?? '',
+          deliveryComplement: draft.address.complement,
+          deliveryReference: draft.address.reference,
+
+          items: {
+            create: draft.orderItemsCreateData,
+          },
+          statusHistory: {
+            create: {
+              fromStatus: null,
+              toStatus: OrderStatus.PENDING,
+              changedByUserId: userId,
+              note: 'Pedido criado',
+            },
           },
         },
-      },
-      include: this.orderInclude(),
-    });
+        include: this.orderInclude(),
+      });
 
-    await this.notifyRestaurantNewOrder(createdOrder.id);
-    return createdOrder;
+      this.logger.log('order.created', {
+        orderId: createdOrder.id,
+        restaurantId: dto.restaurantId,
+        userId,
+        total: Number(createdOrder.total),
+        itemCount: dto.items.length,
+        durationMs: Date.now() - startedAt,
+      });
+
+      await this.notifyRestaurantNewOrder(createdOrder.id);
+      return createdOrder;
+    } catch (error) {
+      this.logger.error('order.create_failed', {
+        restaurantId: dto.restaurantId,
+        userId,
+        userAddressId: dto.userAddressId,
+        paymentMethod: dto.paymentMethod,
+        itemCount: dto.items.length,
+        durationMs: Date.now() - startedAt,
+        errorMessage: error instanceof Error ? error.message : 'Erro desconhecido',
+      });
+      throw error;
+    }
   }
 
   async findMyOrders(userId: string) {
@@ -252,7 +275,7 @@ export class OrdersService {
     });
 
     if (!result.ok && !result.skipped) {
-      this.logger.warn(`Falha ao enviar push de status do pedido ${order.id}`);
+      this.logger.warn('order.status_push_failed', { orderId: order.id, status: (orderWithUser as any)?.status, result });
     }
   }
 
@@ -298,7 +321,7 @@ export class OrdersService {
       });
 
       if (!result.ok && !result.skipped) {
-        this.logger.warn(`Falha ao enviar push de novo pedido ${order.id}`);
+        this.logger.warn('order.new_order_push_failed', { orderId: order.id, restaurantId: order.restaurant?.id, result });
       }
     }
 
