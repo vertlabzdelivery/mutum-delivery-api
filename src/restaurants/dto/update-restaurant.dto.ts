@@ -46,4 +46,12 @@ export class UpdateRestaurantDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  acceptsReferralCoupons?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  acceptsPromotionalCoupons?: boolean;
 }

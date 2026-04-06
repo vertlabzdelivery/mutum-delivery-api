@@ -51,6 +51,8 @@ export class RestaurantsService {
         cityId: dto.cityId,
         minOrder:
           dto.minOrder !== undefined ? new Prisma.Decimal(dto.minOrder) : undefined,
+        acceptsReferralCoupons: dto.acceptsReferralCoupons,
+        acceptsPromotionalCoupons: dto.acceptsPromotionalCoupons,
       },
       include: this.restaurantInclude(),
     });
@@ -247,6 +249,8 @@ export class RestaurantsService {
         minOrder:
           dto.minOrder !== undefined ? new Prisma.Decimal(dto.minOrder) : undefined,
         isActive: dto.isActive,
+        acceptsReferralCoupons: dto.acceptsReferralCoupons,
+        acceptsPromotionalCoupons: dto.acceptsPromotionalCoupons,
       },
       include: this.restaurantInclude(),
     });

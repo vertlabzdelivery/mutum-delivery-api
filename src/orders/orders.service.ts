@@ -12,6 +12,7 @@ import type { CurrentUserData } from '../common/interfaces/current-user.interfac
 import { ORDER_STATUS_FLOW } from './constants/order-status-flow';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { StructuredLoggerService } from '../observability/structured-logger.service';
+import { CouponsService } from '../coupons/coupons.service';
 
 @Injectable()
 export class OrdersService {
@@ -20,6 +21,7 @@ export class OrdersService {
     private readonly pushNotificationsService: PushNotificationsService,
     private readonly ablyRealtimeService: AblyRealtimeService,
     private readonly logger: StructuredLoggerService,
+    private readonly couponsService: CouponsService,
   ) {}
 
   async quote(userId: string, dto: CreateOrderDto) {
@@ -34,7 +36,10 @@ export class OrdersService {
       items: draft.orderItemsPreview,
       subtotal: Number(draft.subtotal),
       deliveryFee: Number(draft.deliveryFee),
+      discountAmount: Number(draft.discountAmount),
       total: Number(draft.total),
+      couponCode: draft.coupon?.couponCode ?? null,
+      couponType: draft.coupon?.couponType ?? null,
       notes: dto.notes ?? null,
     };
   }
@@ -46,47 +51,63 @@ export class OrdersService {
       await this.ensureUserPhoneVerified(userId);
       const draft = await this.buildOrderDraft(userId, dto);
 
-      const createdOrder = await this.prisma.order.create({
-        data: {
-          userId,
-          restaurantId: dto.restaurantId,
-          userAddressId: dto.userAddressId,
-          neighborhoodName: draft.address.neighborhood.name,
-          paymentMethod: dto.paymentMethod,
-          status: OrderStatus.PENDING,
-          subtotal: draft.subtotal,
-          deliveryFee: draft.deliveryFee,
-          total: draft.total,
-          notes: dto.notes?.trim(),
-          cashChangeFor:
-            dto.cashChangeFor !== undefined
-              ? new Prisma.Decimal(dto.cashChangeFor)
-              : null,
+      const createdOrder = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.order.create({
+          data: {
+            userId,
+            restaurantId: dto.restaurantId,
+            userAddressId: dto.userAddressId,
+            neighborhoodName: draft.address.neighborhood.name,
+            paymentMethod: dto.paymentMethod,
+            status: OrderStatus.PENDING,
+            subtotal: draft.subtotal,
+            deliveryFee: draft.deliveryFee,
+            discountAmount: draft.discountAmount,
+            total: draft.total,
+            couponCode: draft.coupon?.couponCode,
+            couponType: draft.coupon?.couponType,
+            promotionalCouponId: draft.coupon?.promotionalCouponId,
+            referralOwnerUserId: draft.coupon?.referralOwnerUserId,
+            referralRewardId: draft.coupon?.referralRewardId,
+            notes: dto.notes?.trim(),
+            cashChangeFor:
+              dto.cashChangeFor !== undefined
+                ? new Prisma.Decimal(dto.cashChangeFor)
+                : null,
 
-          deliveryName: dto.deliveryName.trim(),
-          deliveryPhone: dto.deliveryPhone.trim(),
-          deliveryStreet: draft.address.street,
-          deliveryNumber: draft.address.number,
-          deliveryDistrict: draft.address.neighborhood.name,
-          deliveryCity: draft.address.city.name,
-          deliveryState: draft.address.city.state.code,
-          deliveryZipCode: draft.address.zipCode ?? '',
-          deliveryComplement: draft.address.complement,
-          deliveryReference: draft.address.reference,
+            deliveryName: dto.deliveryName.trim(),
+            deliveryPhone: dto.deliveryPhone.trim(),
+            deliveryStreet: draft.address.street,
+            deliveryNumber: draft.address.number,
+            deliveryDistrict: draft.address.neighborhood.name,
+            deliveryCity: draft.address.city.name,
+            deliveryState: draft.address.city.state.code,
+            deliveryZipCode: draft.address.zipCode ?? '',
+            deliveryComplement: draft.address.complement,
+            deliveryReference: draft.address.reference,
 
-          items: {
-            create: draft.orderItemsCreateData,
-          },
-          statusHistory: {
-            create: {
-              fromStatus: null,
-              toStatus: OrderStatus.PENDING,
-              changedByUserId: userId,
-              note: 'Pedido criado',
+            items: {
+              create: draft.orderItemsCreateData,
+            },
+            statusHistory: {
+              create: {
+                fromStatus: null,
+                toStatus: OrderStatus.PENDING,
+                changedByUserId: userId,
+                note: 'Pedido criado',
+              },
             },
           },
-        },
-        include: this.orderInclude(),
+          include: this.orderInclude(),
+        });
+
+        await this.couponsService.registerCouponUsage(tx, {
+          userId,
+          orderId: created.id,
+          coupon: draft.coupon,
+        });
+
+        return created;
       });
 
       this.logger.log('order.created', {
@@ -267,6 +288,8 @@ export class OrdersService {
       },
       include: this.orderInclude(true),
     });
+
+    await this.couponsService.handleOrderStatusChange(id, status);
 
     await this.notifyOrderStatusChange(updated as any);
 
@@ -617,7 +640,15 @@ export class OrdersService {
     });
 
     const deliveryFee = new Prisma.Decimal(deliveryZone.deliveryFee);
-    const total = subtotal.plus(deliveryFee);
+    const coupon = await this.couponsService.resolveCouponForOrder(this.prisma, {
+      userId,
+      restaurantId: dto.restaurantId,
+      couponCode: dto.couponCode,
+      subtotal,
+      deliveryFee,
+    });
+    const discountAmount = coupon?.discountAmount ?? new Prisma.Decimal(0);
+    const total = Prisma.Decimal.max(new Prisma.Decimal(0), subtotal.plus(deliveryFee).minus(discountAmount));
 
     if (restaurant.minOrder && subtotal.lessThan(restaurant.minOrder)) {
       throw new BadRequestException(
@@ -648,7 +679,9 @@ export class OrdersService {
       deliveryZone,
       subtotal,
       deliveryFee,
+      discountAmount,
       total,
+      coupon,
       orderItemsCreateData,
       orderItemsPreview: orderItemsCreateData.map((item) => ({
         menuItemId: item.menuItemId,

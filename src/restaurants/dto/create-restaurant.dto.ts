@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsNumber,
   IsOptional,
   IsString,
@@ -42,4 +43,12 @@ export class CreateRestaurantDto {
   @IsNumber()
   @Min(0)
   minOrder?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  acceptsReferralCoupons?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  acceptsPromotionalCoupons?: boolean;
 }
