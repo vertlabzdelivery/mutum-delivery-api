@@ -33,6 +33,12 @@ export class AblyRealtimeService {
     return 'https://main.realtime.ably.net';
   }
 
+  /** TTL do token Ably em segundos. Padrão: 23 horas (< 24h máximo do Ably). */
+  private get tokenTtlSeconds() {
+    const parsed = Number(this.configService.get('ABLY_TOKEN_TTL_SECONDS'));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 23 * 60 * 60;
+  }
+
   isEnabled() {
     return Boolean(this.apiKey);
   }
@@ -40,7 +46,9 @@ export class AblyRealtimeService {
   private parseApiKey() {
     const apiKey = this.apiKey;
     if (!apiKey || !apiKey.includes(':')) {
-      throw new ServiceUnavailableException('Ably não configurado corretamente. Defina ABLY_API_KEY.');
+      throw new ServiceUnavailableException(
+        'Ably não configurado. Defina ABLY_API_KEY nas variáveis de ambiente do Vercel.',
+      );
     }
 
     const [keyName, keySecret] = apiKey.split(':');
@@ -60,12 +68,19 @@ export class AblyRealtimeService {
     await this.publishToChannel(restaurantId, 'new-order', payload);
   }
 
-  async publishOrderStatusChanged(restaurantId: string, payload: { orderId: string; previousStatus: string; newStatus: string; note?: string | null }) {
+  async publishOrderStatusChanged(
+    restaurantId: string,
+    payload: { orderId: string; previousStatus: string; newStatus: string; note?: string | null },
+  ) {
     if (!this.isEnabled() || !restaurantId) return;
     await this.publishToChannel(restaurantId, 'order-status-changed', payload);
   }
 
-  private async publishToChannel(restaurantId: string, eventName: string, payload: Record<string, unknown>) {
+  private async publishToChannel(
+    restaurantId: string,
+    eventName: string,
+    payload: Record<string, unknown>,
+  ) {
     try {
       const response = await fetch(
         `${this.restBaseUrl}/channels/${encodeURIComponent(this.getRestaurantOrdersChannelName(restaurantId))}/messages`,
@@ -92,7 +107,9 @@ export class AblyRealtimeService {
       }
     } catch (error) {
       this.logger.warn(
-        `Falha ao publicar evento Ably '${eventName}' do restaurante ${restaurantId}: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
+        `Falha ao publicar evento Ably '${eventName}' restaurante ${restaurantId}: ${
+          error instanceof Error ? error.message : 'erro desconhecido'
+        }`,
       );
     }
   }
@@ -105,12 +122,13 @@ export class AblyRealtimeService {
       throw new NotFoundException('Restaurante não informado.');
     }
 
+    // Verificamos a configuração do Ably antes de bater no banco
+    // para dar um erro claro de 503 (não 401) quando não configurado
+    const { keyName, keySecret } = this.parseApiKey();
+
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },
-      select: {
-        id: true,
-        ownerId: true,
-      },
+      select: { id: true, ownerId: true },
     });
 
     if (!restaurant) {
@@ -125,8 +143,10 @@ export class AblyRealtimeService {
       );
     }
 
-    const { keyName, keySecret } = this.parseApiKey();
     const now = Math.floor(Date.now() / 1000);
+    const ttl = this.tokenTtlSeconds;
+    const expiresAt = now + ttl;
+
     const capability = JSON.stringify({
       [this.getRestaurantOrdersChannelName(restaurantId)]: ['subscribe'],
     });
@@ -134,24 +154,21 @@ export class AblyRealtimeService {
     const token = await this.jwtService.signAsync(
       {
         iat: now,
-        exp: now + 60 * 60,
+        exp: expiresAt,
         'x-ably-capability': capability,
         'x-ably-clientId': `restaurant-panel:${currentUser.userId}`,
       },
       {
         algorithm: 'HS256',
         secret: keySecret,
-        header: {
-          alg: 'HS256',
-          kid: keyName,
-          typ: 'JWT',
-        },
+        header: { alg: 'HS256', kid: keyName, typ: 'JWT' },
       },
     );
 
     return {
       token,
-      expiresAt: new Date((now + 60 * 60) * 1000).toISOString(),
+      ttlSeconds: ttl,
+      expiresAt: new Date(expiresAt * 1000).toISOString(),
       channel: this.getRestaurantOrdersChannelName(restaurantId),
     };
   }

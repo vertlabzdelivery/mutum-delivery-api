@@ -9,6 +9,23 @@ import type { Request, Response } from 'express';
 import type { RequestContextData } from '../interfaces/request-context.interface';
 import { StructuredLoggerService } from '../../observability/structured-logger.service';
 
+/** Converte status HTTP em label de erro padrão. */
+function httpStatusToErrorLabel(status: number): string {
+  const map: Record<number, string> = {
+    400: 'Bad Request',
+    401: 'Unauthorized',
+    403: 'Forbidden',
+    404: 'Not Found',
+    409: 'Conflict',
+    422: 'Unprocessable Entity',
+    429: 'Too Many Requests',
+    500: 'Internal Server Error',
+    502: 'Bad Gateway',
+    503: 'Service Unavailable',
+  };
+  return map[status] ?? 'Internal Server Error';
+}
+
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   constructor(private readonly logger: StructuredLoggerService) {}
@@ -29,17 +46,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
       : 'Erro interno do servidor';
 
     let message: string | string[] = 'Erro interno do servidor';
-    let error = 'Internal Server Error';
+    // BUG CORRIGIDO: Passport lança UnauthorizedException sem campo 'error'
+    // no objeto de resposta — o fallback era 'Internal Server Error' (errado).
+    // Agora derivamos o label do status HTTP quando o campo não estiver presente.
+    let error = httpStatusToErrorLabel(status);
 
     if (typeof exceptionResponse === 'string') {
       message = exceptionResponse;
-    } else if (
-      typeof exceptionResponse === 'object' &&
-      exceptionResponse !== null
-    ) {
+    } else if (typeof exceptionResponse === 'object' && exceptionResponse !== null) {
       const responseObj = exceptionResponse as Record<string, any>;
       message = responseObj.message ?? message;
-      error = responseObj.error ?? error;
+      // Só sobrescreve se o campo existir e for string não-vazia
+      if (responseObj.error && typeof responseObj.error === 'string') {
+        error = responseObj.error;
+      }
     }
 
     const logPayload = {
