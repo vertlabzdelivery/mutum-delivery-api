@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma, Role, User } from '@prisma/client';
+import { generateReferralCode } from '../coupons/coupon-code.util';
 import { PrismaService } from '../prisma/prisma.service';
-import { Role, User } from '@prisma/client';
 
 type CreateUserParams = {
   name: string;
@@ -35,15 +36,32 @@ export class UsersService {
   }
 
   async create(data: CreateUserParams): Promise<User> {
-    return this.prisma.user.create({
-      data: {
-        name: data.name,
-        email: data.email,
-        passwordHash: data.passwordHash,
-        phone: data.phone,
-        role: data.role ?? Role.USER,
-      },
-    });
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      try {
+        return await this.prisma.user.create({
+          data: {
+            name: data.name,
+            email: data.email,
+            passwordHash: data.passwordHash,
+            phone: data.phone,
+            role: data.role ?? Role.USER,
+            referralCode: generateReferralCode(),
+          },
+        });
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002' &&
+          Array.isArray(error.meta?.target) &&
+          (error.meta?.target as string[]).includes('referralCode')
+        ) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new Error('Não foi possível gerar um código de indicação único.');
   }
 
   async deleteMyAccount(userId: string) {

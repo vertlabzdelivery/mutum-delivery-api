@@ -12,6 +12,7 @@ import { Prisma, Role, User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomUUID } from 'crypto';
 import type { CurrentUserData } from '../common/interfaces/current-user.interface';
+import { generateReferralCode } from '../coupons/coupon-code.util';
 import { StructuredLoggerService } from '../observability/structured-logger.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthProtectionService } from '../security/auth-protection.service';
@@ -95,13 +96,13 @@ export class AuthService {
     try {
       const result = await this.prisma.$transaction(async (tx) => {
         const user = await tx.user.create({
-          data: {
+          data: await this.buildUserCreateDataWithReferralCode({
             name: dto.ownerName.trim(),
             email,
             passwordHash,
             phone: ownerPhone,
             role: Role.RESTAURANT,
-          },
+          }),
         });
 
         const restaurant = await tx.restaurant.create({
@@ -125,6 +126,24 @@ export class AuthService {
       this.handleUniqueConstraintError(error);
       throw error;
     }
+  }
+
+  private async buildUserCreateDataWithReferralCode(
+    baseData: Omit<Prisma.UserCreateInput, 'referralCode'>,
+  ): Promise<Prisma.UserCreateInput> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const referralCode = generateReferralCode();
+      const existing = await this.prisma.user.findUnique({
+        where: { referralCode },
+        select: { id: true },
+      });
+
+      if (!existing) {
+        return { ...baseData, referralCode };
+      }
+    }
+
+    throw new BadRequestException('Falha ao gerar código de indicação para o usuário.');
   }
 
   async login(dto: LoginDto, clientIp: string) {

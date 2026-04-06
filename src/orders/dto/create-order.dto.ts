@@ -65,6 +65,10 @@ export class CreateOrderDto {
   @IsString()
   deliveryPhone: string;
 
+  @IsOptional()
+  @IsString()
+  couponCode?: string;
+
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })

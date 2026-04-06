@@ -12,6 +12,7 @@ model User {
   name         String
   email        String   @unique
   passwordHash String
+  referralCode String   @unique
   phone        String?
   phoneVerifiedAt DateTime?
   expoPushToken String?
@@ -28,6 +29,12 @@ model User {
   orderStatusLogs OrderStatusHistory[]
   generatedBillingCycles RestaurantBillingCycle[] @relation("BillingCycleGeneratedBy")
   billingPayments RestaurantPayment[] @relation("BillingPaymentCreatedBy")
+  createdPromotionalCoupons PromotionalCoupon[] @relation("PromotionalCouponCreatedByAdmin")
+  promotionalCouponUsages PromotionalCouponUsage[]
+  referralUsagesAsOwner ReferralUsage[] @relation("ReferralUsageOwner")
+  referralUsagesAsReferred ReferralUsage[] @relation("ReferralUsageReferred")
+  referralRewards ReferralReward[] @relation("ReferralRewardOwner")
+  ordersWithReferralOwner Order[] @relation("OrderReferralOwner")
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -117,6 +124,8 @@ model Restaurant {
   cityId        String?
   minOrder      Decimal? @db.Decimal(10, 2)
   isActive      Boolean  @default(true)
+  acceptsReferralCoupons    Boolean  @default(true)
+  acceptsPromotionalCoupons Boolean  @default(true)
 
   owner         User     @relation(fields: [ownerId], references: [id])
   city          City?    @relation(fields: [cityId], references: [id])
@@ -389,6 +398,12 @@ model Order {
   total                Decimal       @db.Decimal(10, 2)
   notes                String?
   cashChangeFor        Decimal?      @db.Decimal(10, 2)
+  couponCode           String?
+  couponType           CouponType?
+  discountAmount       Decimal       @default(0) @db.Decimal(10, 2)
+  promotionalCouponId  String?
+  referralOwnerUserId  String?
+  referralRewardId     String?       @unique
 
   deliveryName         String
   deliveryPhone        String
@@ -409,9 +424,14 @@ model Order {
 
   user                 User          @relation(fields: [userId], references: [id])
   restaurant           Restaurant    @relation(fields: [restaurantId], references: [id])
+  promotionalCoupon    PromotionalCoupon? @relation(fields: [promotionalCouponId], references: [id])
+  referralOwnerUser    User?         @relation("OrderReferralOwner", fields: [referralOwnerUserId], references: [id])
+  referralReward       ReferralReward? @relation("OrderUsesReferralReward", fields: [referralRewardId], references: [id])
   items                OrderItem[]
   statusHistory        OrderStatusHistory[]
   billingItems         RestaurantBillingItem[]
+  promotionalCouponUsage PromotionalCouponUsage?
+  referralUsage        ReferralUsage?
 
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
@@ -421,6 +441,108 @@ model Order {
   @@index([status])
   @@index([createdAt])
   @@index([userAddressId])
+  @@index([promotionalCouponId])
+  @@index([referralOwnerUserId])
+  @@index([couponCode])
+}
+
+model PromotionalCoupon {
+  id                String   @id @default(uuid())
+  code              String   @unique
+  discountType      DiscountType @default(PERCENT)
+  discountValue     Decimal  @db.Decimal(10, 2)
+  maxDiscountAmount Decimal? @db.Decimal(10, 2)
+  minOrderAmount    Decimal  @default(0) @db.Decimal(10, 2)
+  maxUses           Int
+  usedCount         Int      @default(0)
+  isActive          Boolean  @default(true)
+  startsAt          DateTime?
+  endsAt            DateTime?
+  createdByAdminId  String?
+
+  createdByAdmin User? @relation("PromotionalCouponCreatedByAdmin", fields: [createdByAdminId], references: [id])
+  usages         PromotionalCouponUsage[]
+  orders         Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([code])
+  @@index([startsAt, endsAt])
+  @@index([createdByAdminId])
+}
+
+model PromotionalCouponUsage {
+  id                 String   @id @default(uuid())
+  promotionalCouponId String
+  orderId            String   @unique
+  userId             String
+  couponCode         String
+  discountAmount     Decimal  @db.Decimal(10, 2)
+  usedAt             DateTime @default(now())
+
+  promotionalCoupon PromotionalCoupon @relation(fields: [promotionalCouponId], references: [id])
+  order             Order             @relation(fields: [orderId], references: [id])
+  user              User              @relation(fields: [userId], references: [id])
+
+  @@index([promotionalCouponId])
+  @@index([userId])
+  @@index([usedAt])
+}
+
+model ReferralUsage {
+  id                 String   @id @default(uuid())
+  referralOwnerUserId String
+  referredUserId     String
+  orderId            String   @unique
+  referralCode       String
+  status             ReferralUsageStatus @default(PENDING_CONFIRMATION)
+  discountType       DiscountType
+  discountValue      Decimal  @db.Decimal(10, 2)
+  maxDiscountAmount  Decimal? @db.Decimal(10, 2)
+  discountAmount     Decimal  @db.Decimal(10, 2)
+  rewardGrantedAt    DateTime?
+  usedAt             DateTime @default(now())
+
+  referralOwnerUser User @relation("ReferralUsageOwner", fields: [referralOwnerUserId], references: [id])
+  referredUser     User @relation("ReferralUsageReferred", fields: [referredUserId], references: [id])
+  order            Order @relation(fields: [orderId], references: [id])
+  reward           ReferralReward?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([referredUserId])
+  @@index([referralOwnerUserId])
+  @@index([referredUserId])
+  @@index([status])
+  @@index([referralCode])
+}
+
+model ReferralReward {
+  id                 String   @id @default(uuid())
+  code               String   @unique
+  referralOwnerUserId String
+  referralUsageId    String   @unique
+  discountType       DiscountType
+  discountValue      Decimal  @db.Decimal(10, 2)
+  maxDiscountAmount  Decimal? @db.Decimal(10, 2)
+  status             ReferralRewardStatus @default(PENDING)
+  grantedAt          DateTime?
+  usedAt             DateTime?
+  usedOrderId        String?  @unique
+  appliedDiscountAmount Decimal? @db.Decimal(10, 2)
+
+  referralOwnerUser User @relation("ReferralRewardOwner", fields: [referralOwnerUserId], references: [id])
+  referralUsage     ReferralUsage @relation(fields: [referralUsageId], references: [id])
+  usedOrder         Order? @relation("OrderUsesReferralReward")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([referralOwnerUserId])
+  @@index([status])
 }
 
 model OrderItem {
@@ -597,4 +719,26 @@ enum OptionGroupType {
   SYRUP
   ADDITION
   CUSTOMIZATION
+}
+
+enum CouponType {
+  REFERRAL
+  PROMOTIONAL
+  REFERRAL_REWARD
+}
+
+enum DiscountType {
+  PERCENT
+  FIXED
+}
+
+enum ReferralUsageStatus {
+  PENDING_CONFIRMATION
+  CONFIRMED
+}
+
+enum ReferralRewardStatus {
+  PENDING
+  AVAILABLE
+  USED
 }

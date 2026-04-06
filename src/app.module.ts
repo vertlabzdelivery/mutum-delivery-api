@@ -19,6 +19,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { ObservabilityModule } from './observability/observability.module';
 import { SecurityModule } from './security/security.module';
 import { StoreCategoriesModule } from './store-categories/store-categories.module';
+import { CouponsModule } from './coupons/coupons.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { StoreCategoriesModule } from './store-categories/store-categories.modul
     SecurityModule,
     ObservabilityModule,
     StoreCategoriesModule,
+    CouponsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
