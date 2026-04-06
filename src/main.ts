@@ -12,7 +12,8 @@ import { StructuredLoggerService } from './observability/structured-logger.servi
 import { VercelSpeedInsightsInterceptor } from './observability/vercel-speed-insights.interceptor';
 import { PrismaService } from './prisma/prisma.service';
 
-async function bootstrap() {
+// setupApp é exportado e reutilizado pelo handler do Vercel (src/vercel.ts)
+export async function setupApp() {
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
 
   const corsOrigins = process.env.CORS_ORIGIN
@@ -24,7 +25,6 @@ async function bootstrap() {
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Request-Id'],
-    // Expõe os headers de performance para clientes e ferramentas de monitoramento
     exposedHeaders: ['X-Request-Id', 'X-Response-Time', 'Server-Timing'],
   });
 
@@ -54,18 +54,22 @@ async function bootstrap() {
 
   app.useGlobalFilters(new HttpExceptionFilter(logger));
   app.useGlobalInterceptors(
-    // Speed Insights primeiro — mede o tempo total incluindo outros interceptors
     new VercelSpeedInsightsInterceptor(logger),
     new RequestLoggingInterceptor(logger),
     new ResponseInterceptor(),
   );
 
+  return { app, logger };
+}
+
+// Bootstrap padrão para execução local e outros ambientes (Railway, Render, etc.)
+async function bootstrap() {
+  const { app, logger } = await setupApp();
+
   const prismaService = app.get(PrismaService);
 
-  // CORRIGIDO: trata SIGTERM e SIGINT além de beforeExit
-  // beforeExit não dispara em process.exit() explícito ou sinais de SO
   const shutdown = async (signal: string) => {
-    logger.log(`app.shutdown`, { signal });
+    logger.log('app.shutdown', { signal });
     await app.close();
     process.exit(0);
   };
@@ -82,4 +86,7 @@ async function bootstrap() {
   });
 }
 
-bootstrap();
+// Executa apenas quando chamado diretamente (não pelo Vercel)
+if (process.env.VERCEL !== '1') {
+  bootstrap();
+}

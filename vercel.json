@@ -1,15 +1,36 @@
 {
   "version": 2,
-  "buildCommand": "npm run build",
   "installCommand": "npm ci",
+  "buildCommand": "npm run build",
   "builds": [
     {
-      "src": "dist/main.js",
+      "src": "src/vercel.ts",
       "use": "@vercel/node",
-      "config": { "maxDuration": 30 }
+      "config": {
+        "maxDuration": 30
+      }
     }
   ],
   "routes": [
-    { "src": "/(.*)", "dest": "dist/main.js" }
+    {
+      "src": "/(.*)",
+      "dest": "src/vercel.ts"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/health",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" }
+      ]
+    },
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+      ]
+    }
   ]
 }
