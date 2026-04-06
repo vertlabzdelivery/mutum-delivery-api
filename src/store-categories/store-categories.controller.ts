@@ -31,6 +31,25 @@ export class StoreCategoriesController {
     return this.service.findAll(activeOnly === 'true');
   }
 
+  // CORRIGIDO: rotas específicas antes de :id para evitar conflito de roteamento
+  @Get('restaurant/:restaurantId')
+  findRestaurantCategories(
+    @Param('restaurantId', new ParseUUIDPipe()) restaurantId: string,
+  ) {
+    return this.service.findRestaurantCategories(restaurantId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN, Role.RESTAURANT)
+  @Put('restaurant/:restaurantId')
+  setRestaurantCategories(
+    @Param('restaurantId', new ParseUUIDPipe()) restaurantId: string,
+    @Body() dto: SetRestaurantStoreCategoriesDto,
+    @CurrentUser() currentUser: CurrentUserData,
+  ) {
+    return this.service.setRestaurantCategories(restaurantId, dto, currentUser);
+  }
+
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.service.findOne(id);
@@ -58,23 +77,5 @@ export class StoreCategoriesController {
   @Delete(':id')
   remove(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.service.remove(id);
-  }
-
-  @Get('restaurant/:restaurantId')
-  findRestaurantCategories(
-    @Param('restaurantId', new ParseUUIDPipe()) restaurantId: string,
-  ) {
-    return this.service.findRestaurantCategories(restaurantId);
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN, Role.RESTAURANT)
-  @Put('restaurant/:restaurantId')
-  setRestaurantCategories(
-    @Param('restaurantId', new ParseUUIDPipe()) restaurantId: string,
-    @Body() dto: SetRestaurantStoreCategoriesDto,
-    @CurrentUser() currentUser: CurrentUserData,
-  ) {
-    return this.service.setRestaurantCategories(restaurantId, dto, currentUser);
   }
 }

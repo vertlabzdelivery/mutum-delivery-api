@@ -1,11 +1,11 @@
 /**
  * Entry point exclusivo para o Vercel Serverless.
  *
- * O Vercel invoca este arquivo como uma serverless function.
+ * O @vercel/node compila este arquivo TypeScript automaticamente.
  * A app NestJS é inicializada uma única vez e reutilizada entre
  * invocações da mesma instância (warm start).
  */
-import * as express from 'express';
+import express from 'express';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { NestFactory } from '@nestjs/core';
 import { ExpressAdapter } from '@nestjs/platform-express';
@@ -22,14 +22,13 @@ import { RequestLoggingInterceptor } from './observability/request-logging.inter
 import { StructuredLoggerService } from './observability/structured-logger.service';
 import { VercelSpeedInsightsInterceptor } from './observability/vercel-speed-insights.interceptor';
 
-// Express app compartilhado entre invocações (warm start)
-const expressApp = express();
-let initialized = false;
+const server = express();
+let isReady = false;
 
 async function bootstrap() {
-  if (initialized) return expressApp;
+  if (isReady) return;
 
-  const adapter = new ExpressAdapter(expressApp);
+  const adapter = new ExpressAdapter(server);
   const app = await NestFactory.create(AppModule, adapter, { bufferLogs: false });
 
   const corsOrigins = process.env.CORS_ORIGIN
@@ -63,7 +62,6 @@ async function bootstrap() {
   );
 
   const logger = app.select(ObservabilityModule).get(StructuredLoggerService, { strict: false });
-
   app.useGlobalFilters(new HttpExceptionFilter(logger));
   app.useGlobalInterceptors(
     new VercelSpeedInsightsInterceptor(logger),
@@ -71,15 +69,11 @@ async function bootstrap() {
     new ResponseInterceptor(),
   );
 
-  // init() em vez de listen() — não abre porta TCP no Vercel
   await app.init();
-
-  initialized = true;
-  return expressApp;
+  isReady = true;
 }
 
-// Handler padrão exportado — o Vercel chama isso em cada requisição
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
-  const app = await bootstrap();
-  app(req, res);
+  await bootstrap();
+  server(req, res);
 }
