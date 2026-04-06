@@ -30,6 +30,11 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
     await this.$connect();
   }
 
+  /**
+   * CORRIGIDO: registra `beforeExit` para compatibilidade com desligamentos
+   * normais do processo. O SIGTERM/SIGINT é tratado no main.ts para cobrir
+   * desligamentos forçados (Vercel, Docker, Kubernetes).
+   */
   async enableShutdownHooks(app: INestApplication) {
     process.on('beforeExit', async () => {
       await app.close();

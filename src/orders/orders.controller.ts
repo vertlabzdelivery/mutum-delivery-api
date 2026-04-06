@@ -1,11 +1,14 @@
 import {
   Body,
   Controller,
+  DefaultValuePipe,
   Get,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { Role } from '@prisma/client';
@@ -36,8 +39,12 @@ export class OrdersController {
 
   @UseGuards(JwtAuthGuard)
   @Get('my')
-  findMyOrders(@CurrentUser() user: CurrentUserData) {
-    return this.ordersService.findMyOrders(user.userId);
+  findMyOrders(
+    @CurrentUser() user: CurrentUserData,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+  ) {
+    return this.ordersService.findMyOrders(user.userId, page, limit);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -46,8 +53,10 @@ export class OrdersController {
   findRestaurantOrders(
     @Param('restaurantId', new ParseUUIDPipe()) restaurantId: string,
     @CurrentUser() user: CurrentUserData,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(30), ParseIntPipe) limit: number,
   ) {
-    return this.ordersService.findRestaurantOrders(restaurantId, user);
+    return this.ordersService.findRestaurantOrders(restaurantId, user, page, limit);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -67,7 +76,6 @@ export class OrdersController {
     @Body() dto: UpdateOrderStatusDto,
     @CurrentUser() user: CurrentUserData,
   ) {
-    // Usa cancelReason como note quando for cancelamento
     const note = dto.cancelReason || dto.note;
     return this.ordersService.updateStatus(id, dto.status, user, note);
   }

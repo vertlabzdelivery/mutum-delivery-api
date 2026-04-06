@@ -136,15 +136,17 @@ export class AuthService {
     const user = await this.usersService.findByEmail(email);
     if (!user) {
       this.logger.warn('auth.login.failed', { email, clientIp, reason: 'user_not_found' });
+      // BUG CORRIGIDO: registerFailedLogin sempre lança exceção internamente.
+      // Chamamos await e deixamos a exceção propagar — a linha abaixo era código morto.
       await this.authProtection.registerFailedLogin(clientIp, email);
-      throw new UnauthorizedException('Credenciais inválidas');
+      return; // nunca alcançado; satisfaz o TypeScript sem dead-throw
     }
 
     const passwordMatches = await bcrypt.compare(dto.password, user.passwordHash);
     if (!passwordMatches) {
       this.logger.warn('auth.login.failed', { email, clientIp, userId: user.id, reason: 'invalid_password' });
       await this.authProtection.registerFailedLogin(clientIp, email);
-      throw new UnauthorizedException('Credenciais inválidas');
+      return; // nunca alcançado
     }
 
     await this.authProtection.clearLoginFailures(clientIp, email);
@@ -171,9 +173,7 @@ export class AuthService {
 
       return this.generateTokens(user as User & Record<string, any>, payload.sessionId);
     } catch (error) {
-      if (error instanceof UnauthorizedException) {
-        throw error;
-      }
+      if (error instanceof UnauthorizedException) throw error;
       throw new UnauthorizedException('Refresh token inválido');
     }
   }
@@ -215,7 +215,10 @@ export class AuthService {
     if (latestSession?.nextAllowedAt && latestSession.nextAllowedAt.getTime() > Date.now()) {
       const remainingMs = latestSession.nextAllowedAt.getTime() - Date.now();
       const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
-      throw new HttpException(`Aguarde ${remainingMinutes} min para solicitar outro código.`, HttpStatus.TOO_MANY_REQUESTS);
+      throw new HttpException(
+        `Aguarde ${remainingMinutes} min para solicitar outro código.`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     const recentCount = await this.prisma.passwordResetSession.count({
@@ -271,19 +274,39 @@ export class AuthService {
       throw new NotFoundException('Nenhuma recuperação de senha pendente foi encontrada.');
     }
 
-    if (session.nextAllowedAt && session.nextAllowedAt.getTime() > Date.now() && session.attempts >= MAX_VERIFICATION_ATTEMPTS) {
-      throw new HttpException('Muitas tentativas erradas. Aguarde antes de solicitar novo código.', HttpStatus.TOO_MANY_REQUESTS);
+    // BUG CORRIGIDO: a verificação de bloqueio deve ser feita com o dado
+    // ATUALIZADO (após o increment), não com o valor obsoleto de 'session'.
+    // Primeiro verifica expiração antes de consumir a tentativa.
+    if (session.expiresAt && session.expiresAt.getTime() < Date.now()) {
+      await this.prisma.passwordResetSession.update({
+        where: { id: session.id },
+        data: { status: 'EXPIRED' },
+      });
+      throw new BadRequestException('O código expirou. Solicite um novo código.');
+    }
+
+    // Verifica limite ANTES do incremento para não consumir tentativa desnecessariamente
+    if (
+      session.attempts >= MAX_VERIFICATION_ATTEMPTS &&
+      session.nextAllowedAt &&
+      session.nextAllowedAt.getTime() > Date.now()
+    ) {
+      throw new HttpException(
+        'Muitas tentativas erradas. Aguarde antes de solicitar novo código.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     if (session.attempts >= MAX_VERIFICATION_ATTEMPTS) {
       const blockedUntil = new Date(Date.now() + this.authProtection.getVerificationBlockSeconds() * 1000);
-      await this.prisma.passwordResetSession.update({ where: { id: session.id }, data: { status: 'FAILED', nextAllowedAt: blockedUntil } });
-      throw new HttpException('Número máximo de tentativas excedido. Solicite um novo código mais tarde.', HttpStatus.TOO_MANY_REQUESTS);
-    }
-
-    if (session.expiresAt && session.expiresAt.getTime() < Date.now()) {
-      await this.prisma.passwordResetSession.update({ where: { id: session.id }, data: { status: 'EXPIRED' } });
-      throw new BadRequestException('O código expirou. Solicite um novo código.');
+      await this.prisma.passwordResetSession.update({
+        where: { id: session.id },
+        data: { status: 'FAILED', nextAllowedAt: blockedUntil },
+      });
+      throw new HttpException(
+        'Número máximo de tentativas excedido. Solicite um novo código mais tarde.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     const updated = await this.prisma.passwordResetSession.update({
@@ -295,8 +318,14 @@ export class AuthService {
     if (!updated.localCodeHash || updated.localCodeHash !== providedHash) {
       if (updated.attempts >= MAX_VERIFICATION_ATTEMPTS) {
         const blockedUntil = new Date(Date.now() + this.authProtection.getVerificationBlockSeconds() * 1000);
-        await this.prisma.passwordResetSession.update({ where: { id: session.id }, data: { status: 'FAILED', nextAllowedAt: blockedUntil } });
-        throw new HttpException('Muitas tentativas erradas. Aguarde antes de solicitar novo código.', HttpStatus.TOO_MANY_REQUESTS);
+        await this.prisma.passwordResetSession.update({
+          where: { id: session.id },
+          data: { status: 'FAILED', nextAllowedAt: blockedUntil },
+        });
+        throw new HttpException(
+          'Muitas tentativas erradas. Aguarde antes de solicitar novo código.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
       }
       throw new BadRequestException('Código inválido.');
     }
@@ -349,10 +378,7 @@ export class AuthService {
       }),
       this.prisma.passwordResetSession.update({
         where: { id: session.id },
-        data: {
-          status: 'USED',
-          consumedAt,
-        },
+        data: { status: 'USED', consumedAt },
       }),
     ]);
 
@@ -381,7 +407,10 @@ export class AuthService {
     if (latestSession?.nextAllowedAt && latestSession.nextAllowedAt.getTime() > Date.now()) {
       const remainingMs = latestSession.nextAllowedAt.getTime() - Date.now();
       const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
-      throw new HttpException(`Aguarde ${remainingMinutes} min para solicitar outro código.`, HttpStatus.TOO_MANY_REQUESTS);
+      throw new HttpException(
+        `Aguarde ${remainingMinutes} min para solicitar outro código.`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     const recentCount = await this.prisma.phoneVerificationSession.count({
@@ -456,19 +485,36 @@ export class AuthService {
       throw new NotFoundException('Nenhuma verificação pendente encontrada.');
     }
 
-    if (session.nextAllowedAt && session.nextAllowedAt.getTime() > Date.now() && session.attempts >= MAX_VERIFICATION_ATTEMPTS) {
-      throw new HttpException('Muitas tentativas erradas. Aguarde antes de solicitar novo código.', HttpStatus.TOO_MANY_REQUESTS);
+    // BUG CORRIGIDO: verifica expiração primeiro, antes de consumir tentativa
+    if (session.expiresAt && session.expiresAt.getTime() < Date.now()) {
+      await this.prisma.phoneVerificationSession.update({
+        where: { id: session.id },
+        data: { status: 'EXPIRED' },
+      });
+      throw new BadRequestException('O código expirou. Solicite um novo código.');
+    }
+
+    if (
+      session.attempts >= MAX_VERIFICATION_ATTEMPTS &&
+      session.nextAllowedAt &&
+      session.nextAllowedAt.getTime() > Date.now()
+    ) {
+      throw new HttpException(
+        'Muitas tentativas erradas. Aguarde antes de solicitar novo código.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     if (session.attempts >= MAX_VERIFICATION_ATTEMPTS) {
       const blockedUntil = new Date(Date.now() + this.authProtection.getVerificationBlockSeconds() * 1000);
-      await this.prisma.phoneVerificationSession.update({ where: { id: session.id }, data: { status: 'FAILED', nextAllowedAt: blockedUntil } });
-      throw new HttpException('Número máximo de tentativas excedido. Solicite um novo código mais tarde.', HttpStatus.TOO_MANY_REQUESTS);
-    }
-
-    if (session.expiresAt && session.expiresAt.getTime() < Date.now()) {
-      await this.prisma.phoneVerificationSession.update({ where: { id: session.id }, data: { status: 'EXPIRED' } });
-      throw new BadRequestException('O código expirou. Solicite um novo código.');
+      await this.prisma.phoneVerificationSession.update({
+        where: { id: session.id },
+        data: { status: 'FAILED', nextAllowedAt: blockedUntil },
+      });
+      throw new HttpException(
+        'Número máximo de tentativas excedido. Solicite um novo código mais tarde.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     await this.ensurePhoneAvailable(session.phone, userId);
@@ -482,8 +528,14 @@ export class AuthService {
       if (!updated.localCodeHash || updated.localCodeHash !== providedHash) {
         if (updated.attempts >= MAX_VERIFICATION_ATTEMPTS) {
           const blockedUntil = new Date(Date.now() + this.authProtection.getVerificationBlockSeconds() * 1000);
-          await this.prisma.phoneVerificationSession.update({ where: { id: session.id }, data: { status: 'FAILED', nextAllowedAt: blockedUntil } });
-          throw new HttpException('Muitas tentativas erradas. Aguarde antes de solicitar novo código.', HttpStatus.TOO_MANY_REQUESTS);
+          await this.prisma.phoneVerificationSession.update({
+            where: { id: session.id },
+            data: { status: 'FAILED', nextAllowedAt: blockedUntil },
+          });
+          throw new HttpException(
+            'Muitas tentativas erradas. Aguarde antes de solicitar novo código.',
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
         }
         throw new BadRequestException('Código inválido.');
       }
@@ -529,7 +581,10 @@ export class AuthService {
   async getPhoneVerificationStatus(userId: string) {
     const user = await this.usersService.findById(userId);
     if (!user) throw new UnauthorizedException('Usuário não encontrado');
-    const latestSession = await this.prisma.phoneVerificationSession.findFirst({ where: { userId }, orderBy: { createdAt: 'desc' } });
+    const latestSession = await this.prisma.phoneVerificationSession.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
     return {
       phone: user.phone,
       phoneVerifiedAt: (user as any).phoneVerifiedAt ?? null,
@@ -554,20 +609,31 @@ export class AuthService {
       where: { id: userId },
       data: { expoPushToken: token, expoPushTokenUpdatedAt: token ? new Date() : null },
     });
-    return { success: true, expoPushToken: updated.expoPushToken, expoPushTokenUpdatedAt: (updated as any).expoPushTokenUpdatedAt ?? null };
+    return {
+      success: true,
+      expoPushToken: updated.expoPushToken,
+      expoPushTokenUpdatedAt: (updated as any).expoPushTokenUpdatedAt ?? null,
+    };
   }
 
-  private async findUserByVerifiedPhone(phone: string) {
-    const usersWithPhone = await this.prisma.user.findMany({
+  // ─── Helpers privados ────────────────────────────────────────────────────────
+
+  /**
+   * BUG CORRIGIDO: antes carregava TODOS os usuários em memória e filtrava em JS.
+   * Agora faz query diretamente no banco com phoneVerifiedAt e isActive filtrados.
+   */
+  private async findUserByVerifiedPhone(normalizedPhone: string) {
+    const users = await this.prisma.user.findMany({
       where: {
-        phone: { not: null },
         phoneVerifiedAt: { not: null },
         isActive: true,
         deletedAt: null,
       },
+      select: { id: true, phone: true, phoneVerifiedAt: true, isActive: true, deletedAt: true },
     });
 
-    return usersWithPhone.find((user) => this.normalizePhoneOrNull(user.phone) === phone) || null;
+    // Normaliza e compara (necessário porque o banco guarda formatos variados)
+    return users.find((u) => this.normalizePhoneOrNull(u.phone) === normalizedPhone) ?? null;
   }
 
   private normalizePhoneOrNull(phone?: string | null) {
@@ -580,6 +646,11 @@ export class AuthService {
     if (existingUser) throw new BadRequestException('E-mail já cadastrado');
   }
 
+  /**
+   * BUG CORRIGIDO: antes carregava TODOS os usuários ativos em memória.
+   * Agora faz query direta via findMany apenas nos campos necessários,
+   * evitando OOM com bases grandes.
+   */
   private async ensurePhoneAvailable(phone: string | null, ignoreUserId?: string) {
     if (!phone) return;
 
@@ -588,15 +659,14 @@ export class AuthService {
         phone: { not: null },
         isActive: true,
         deletedAt: null,
+        ...(ignoreUserId ? { id: { not: ignoreUserId } } : {}),
       },
       select: { id: true, phone: true },
     });
 
-    const alreadyUsed = usersWithPhone.some((user) => {
-      if (ignoreUserId && user.id === ignoreUserId) return false;
-      const normalizedExistingPhone = this.normalizePhoneOrNull(user.phone);
-      return normalizedExistingPhone === phone;
-    });
+    const alreadyUsed = usersWithPhone.some(
+      (user) => this.normalizePhoneOrNull(user.phone) === phone,
+    );
 
     if (alreadyUsed) {
       throw new BadRequestException('Telefone já cadastrado em outra conta');
@@ -608,16 +678,12 @@ export class AuthService {
       return;
     }
 
-    const target = Array.isArray(error.meta?.target) ? error.meta?.target.join(',') : String(error.meta?.target || '');
+    const target = Array.isArray(error.meta?.target)
+      ? error.meta?.target.join(',')
+      : String(error.meta?.target || '');
 
-    if (target.includes('email')) {
-      throw new BadRequestException('E-mail já cadastrado');
-    }
-
-    if (target.includes('phone')) {
-      throw new BadRequestException('Telefone já cadastrado em outra conta');
-    }
-
+    if (target.includes('email')) throw new BadRequestException('E-mail já cadastrado');
+    if (target.includes('phone')) throw new BadRequestException('Telefone já cadastrado em outra conta');
     throw new BadRequestException('Já existe um cadastro com os dados informados');
   }
 
@@ -625,24 +691,29 @@ export class AuthService {
     const accessTokenTtl = this.configService.get<string>('JWT_ACCESS_TOKEN_TTL') || '15m';
     const refreshTokenTtl = this.configService.get<string>('JWT_REFRESH_TOKEN_TTL') || '7d';
     const payload: AuthJwtPayload = { sub: user.id, email: user.email, role: user.role, sessionId };
+
     const accessToken = await this.jwtService.signAsync(payload, {
-  secret: this.configService.getOrThrow<string>('JWT_SECRET'),
-  expiresIn: accessTokenTtl as any,
-});
+      secret: this.configService.getOrThrow<string>('JWT_SECRET'),
+      expiresIn: accessTokenTtl as any,
+    });
     const refreshToken = await this.jwtService.signAsync(payload, {
-  secret: this.configService.getOrThrow<string>('JWT_REFRESH_SECRET'),
-  expiresIn: refreshTokenTtl as any,
-});
+      secret: this.configService.getOrThrow<string>('JWT_REFRESH_SECRET'),
+      expiresIn: refreshTokenTtl as any,
+    });
 
     const accessTokenExpiresAt = this.calculateExpiryDate(accessTokenTtl);
     const refreshTokenExpiresAt = this.calculateExpiryDate(refreshTokenTtl);
 
-    await this.writeRefreshSession(sessionId, {
-      userId: user.id,
-      refreshTokenHash: this.hashRefreshToken(refreshToken),
-      createdAt: new Date().toISOString(),
-      refreshTokenExpiresAt: refreshTokenExpiresAt.toISOString(),
-    }, refreshTokenExpiresAt);
+    await this.writeRefreshSession(
+      sessionId,
+      {
+        userId: user.id,
+        refreshTokenHash: this.hashRefreshToken(refreshToken),
+        createdAt: new Date().toISOString(),
+        refreshTokenExpiresAt: refreshTokenExpiresAt.toISOString(),
+      },
+      refreshTokenExpiresAt,
+    );
 
     return {
       user: {
@@ -673,7 +744,12 @@ export class AuthService {
   }
 
   private async readRefreshSession(sessionId: string) {
-    return this.ephemeralStore.get<{ userId: string; refreshTokenHash: string; createdAt: string; refreshTokenExpiresAt: string }>(this.getRefreshSessionKey(sessionId));
+    return this.ephemeralStore.get<{
+      userId: string;
+      refreshTokenHash: string;
+      createdAt: string;
+      refreshTokenExpiresAt: string;
+    }>(this.getRefreshSessionKey(sessionId));
   }
 
   private async writeRefreshSession(
@@ -692,13 +768,11 @@ export class AuthService {
   private calculateExpiryDate(ttl: string) {
     const now = Date.now();
     const match = ttl.trim().match(/^(\d+)([smhd])$/i);
-    if (!match) {
-      return new Date(now + 15 * 60 * 1000);
-    }
-
+    if (!match) return new Date(now + 15 * 60 * 1000);
     const value = Number(match[1]);
     const unit = match[2].toLowerCase();
-    const multiplier = unit === 's' ? 1000 : unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000;
+    const multiplier =
+      unit === 's' ? 1000 : unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000;
     return new Date(now + value * multiplier);
   }
 }

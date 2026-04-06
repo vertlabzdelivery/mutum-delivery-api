@@ -114,17 +114,40 @@ export class OrdersService {
     }
   }
 
-  async findMyOrders(userId: string) {
-    return this.prisma.order.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      include: this.orderInclude(),
-    });
+  async findMyOrders(userId: string, page = 1, limit = 20) {
+    // MELHORIA: paginação adicionada — sem isso, usuários com muitos pedidos
+    // causariam respostas enormes e lentidão no banco
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(Math.max(1, limit), 100);
+    const skip = (safePage - 1) * safeLimit;
+
+    const [orders, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: safeLimit,
+        include: this.orderInclude(),
+      }),
+      this.prisma.order.count({ where: { userId } }),
+    ]);
+
+    return {
+      data: orders,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(total / safeLimit),
+      },
+    };
   }
 
   async findRestaurantOrders(
     restaurantId: string,
     currentUser: CurrentUserData,
+    page = 1,
+    limit = 30,
   ) {
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },
@@ -140,11 +163,30 @@ export class OrdersService {
 
     this.ensureCanManageRestaurant(restaurant.ownerId, currentUser);
 
-    return this.prisma.order.findMany({
-      where: { restaurantId },
-      orderBy: { createdAt: 'desc' },
-      include: this.orderInclude(true),
-    });
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(Math.max(1, limit), 100);
+    const skip = (safePage - 1) * safeLimit;
+
+    const [orders, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where: { restaurantId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: safeLimit,
+        include: this.orderInclude(true),
+      }),
+      this.prisma.order.count({ where: { restaurantId } }),
+    ]);
+
+    return {
+      data: orders,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(total / safeLimit),
+      },
+    };
   }
 
   async findOne(id: string, currentUser: CurrentUserData) {

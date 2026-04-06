@@ -8,6 +8,9 @@ type RedisLikeClient = {
   set(key: string, value: string, options?: { EX: number }): Promise<unknown>;
   get(key: string): Promise<string | null>;
   del(keys: string | string[]): Promise<unknown>;
+  /** Incremento atômico nativo do Redis — sem race condition */
+  incr(key: string): Promise<number>;
+  expire(key: string, seconds: number): Promise<unknown>;
   scan(
     cursor: string,
     options: { MATCH: string; COUNT: number },
@@ -31,20 +34,15 @@ export class RedisCacheService implements OnModuleInit {
 
   getTtlSeconds(envName: string, fallbackSeconds: number) {
     const parsed = Number(process.env[envName]);
-
     if (Number.isFinite(parsed) && parsed > 0) {
       return Math.floor(parsed);
     }
-
     return fallbackSeconds;
   }
 
   async get<T>(key: string): Promise<T | null> {
     const cached = await this.getParsed<T>(key);
-    if (!cached.hit) {
-      return null;
-    }
-
+    if (!cached.hit) return null;
     return cached.value;
   }
 
@@ -54,11 +52,7 @@ export class RedisCacheService implements OnModuleInit {
     factory: () => Promise<T>,
   ): Promise<T> {
     const cached = await this.getParsed<T>(key);
-
-    if (cached.hit) {
-      return cached.value;
-    }
-
+    if (cached.hit) return cached.value;
     const value = await factory();
     await this.set(key, value, ttlSeconds);
     return value;
@@ -66,13 +60,8 @@ export class RedisCacheService implements OnModuleInit {
 
   async set(key: string, value: unknown, ttlSeconds?: number) {
     const client = await this.getClient();
-
-    if (!client) {
-      return;
-    }
-
+    if (!client) return;
     const payload = JSON.stringify(value);
-
     try {
       await this.withOperationTimeout(
         ttlSeconds && ttlSeconds > 0
@@ -85,13 +74,36 @@ export class RedisCacheService implements OnModuleInit {
     }
   }
 
+  /**
+   * Incremento 100% atômico usando INCR nativo do Redis.
+   * Elimina a race condition do get→set manual.
+   * Retorna null se o Redis estiver indisponível (o chamador deve tratar o fallback).
+   */
+  async atomicIncr(key: string, ttlSeconds: number): Promise<number | null> {
+    const client = await this.getClient();
+    if (!client) return null;
+    try {
+      const next = await this.withOperationTimeout<number>(
+        client.incr(key),
+        `incr:${key}`,
+      );
+      // TTL só é aplicado quando a chave é criada (next === 1)
+      if (next === 1) {
+        await this.withOperationTimeout(
+          client.expire(key, ttlSeconds),
+          `expire:${key}`,
+        );
+      }
+      return next;
+    } catch (error) {
+      this.handleRedisFailure(error, `incr:${key}`);
+      return null;
+    }
+  }
+
   async del(key: string) {
     const client = await this.getClient();
-
-    if (!client) {
-      return;
-    }
-
+    if (!client) return;
     try {
       await this.withOperationTimeout(client.del(key), `del:${key}`);
     } catch (error) {
@@ -101,17 +113,9 @@ export class RedisCacheService implements OnModuleInit {
 
   async delMany(keys: string[]) {
     const normalizedKeys = [...new Set(keys.filter(Boolean))];
-
-    if (!normalizedKeys.length) {
-      return;
-    }
-
+    if (!normalizedKeys.length) return;
     const client = await this.getClient();
-
-    if (!client) {
-      return;
-    }
-
+    if (!client) return;
     try {
       await this.withOperationTimeout(
         client.del(normalizedKeys),
@@ -124,26 +128,16 @@ export class RedisCacheService implements OnModuleInit {
 
   async delByPrefix(prefix: string) {
     const client = await this.getClient();
-
-    if (!client) {
-      return;
-    }
-
+    if (!client) return;
     let cursor = '0';
-
     try {
       do {
         const result = await this.withOperationTimeout(
-          client.scan(cursor, {
-            MATCH: `${prefix}*`,
-            COUNT: 100,
-          }),
+          client.scan(cursor, { MATCH: `${prefix}*`, COUNT: 100 }),
           `scan:${prefix}`,
           this.getOperationTimeoutMs() * 2,
         );
-
         cursor = result.cursor;
-
         if (result.keys.length) {
           await this.withOperationTimeout(client.del(result.keys), `del:${prefix}`);
         }
@@ -155,7 +149,6 @@ export class RedisCacheService implements OnModuleInit {
 
   async getStatus() {
     const client = await this.getClient();
-
     return {
       enabled: this.isEnabled(),
       connected: Boolean(client?.isOpen),
@@ -167,22 +160,11 @@ export class RedisCacheService implements OnModuleInit {
     key: string,
   ): Promise<{ hit: false } | { hit: true; value: T }> {
     const client = await this.getClient();
-
-    if (!client) {
-      return { hit: false };
-    }
-
+    if (!client) return { hit: false };
     try {
       const raw = await this.withOperationTimeout(client.get(key), `get:${key}`);
-
-      if (raw === null) {
-        return { hit: false };
-      }
-
-      return {
-        hit: true,
-        value: JSON.parse(raw) as T,
-      };
+      if (raw === null) return { hit: false };
+      return { hit: true, value: JSON.parse(raw) as T };
     } catch (error) {
       this.handleRedisFailure(error, `get:${key}`);
       return { hit: false };
@@ -190,24 +172,11 @@ export class RedisCacheService implements OnModuleInit {
   }
 
   private async getClient(): Promise<RedisLikeClient | null> {
-    if (!this.isEnabled()) {
-      return null;
-    }
-
-    if (Date.now() < RedisCacheService.disabledUntil) {
-      return null;
-    }
-
-    if (RedisCacheService.client?.isOpen) {
-      return RedisCacheService.client;
-    }
-
-    if (RedisCacheService.connectPromise) {
-      return RedisCacheService.connectPromise;
-    }
-
+    if (!this.isEnabled()) return null;
+    if (Date.now() < RedisCacheService.disabledUntil) return null;
+    if (RedisCacheService.client?.isOpen) return RedisCacheService.client;
+    if (RedisCacheService.connectPromise) return RedisCacheService.connectPromise;
     RedisCacheService.connectPromise = this.connect();
-
     try {
       return await RedisCacheService.connectPromise;
     } finally {
@@ -217,34 +186,20 @@ export class RedisCacheService implements OnModuleInit {
 
   private async connect(): Promise<RedisLikeClient | null> {
     const redisUrl = process.env.REDIS_URL;
-
-    if (!redisUrl) {
-      return null;
-    }
-
+    if (!redisUrl) return null;
     const forceTls = process.env.REDIS_TLS === 'true';
     const useTls = forceTls || redisUrl.startsWith('rediss://');
     const socket = useTls
-      ? {
-          connectTimeout: this.getConnectTimeoutMs(),
-          reconnectStrategy: false as const,
-          tls: true as const,
-        }
-      : {
-          connectTimeout: this.getConnectTimeoutMs(),
-          reconnectStrategy: false as const,
-        };
-
+      ? { connectTimeout: this.getConnectTimeoutMs(), reconnectStrategy: false as const, tls: true as const }
+      : { connectTimeout: this.getConnectTimeoutMs(), reconnectStrategy: false as const };
     const client = createClient({
       url: redisUrl,
       socket,
       disableOfflineQueue: true,
     }) as unknown as RedisLikeClient;
-
     client.on('error', (error) => {
       this.logger.error(`Redis error: ${error.message}`);
     });
-
     try {
       await this.withTimeout(client.connect(), this.getConnectTimeoutMs(), 'connect');
       RedisCacheService.client = client;
@@ -280,20 +235,15 @@ export class RedisCacheService implements OnModuleInit {
 
   private async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
     let timer: NodeJS.Timeout | undefined;
-
     try {
       return await Promise.race([
         promise,
         new Promise<T>((_, reject) => {
-          timer = setTimeout(() => {
-            reject(new Error(`Redis timeout em ${label} (${ms}ms)`));
-          }, ms);
+          timer = setTimeout(() => reject(new Error(`Redis timeout em ${label} (${ms}ms)`)), ms);
         }),
       ]);
     } finally {
-      if (timer) {
-        clearTimeout(timer);
-      }
+      if (timer) clearTimeout(timer);
     }
   }
 

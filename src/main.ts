@@ -9,6 +9,7 @@ import type { RequestContextData } from './common/interfaces/request-context.int
 import { ObservabilityModule } from './observability/observability.module';
 import { RequestLoggingInterceptor } from './observability/request-logging.interceptor';
 import { StructuredLoggerService } from './observability/structured-logger.service';
+import { VercelSpeedInsightsInterceptor } from './observability/vercel-speed-insights.interceptor';
 import { PrismaService } from './prisma/prisma.service';
 
 async function bootstrap() {
@@ -23,7 +24,8 @@ async function bootstrap() {
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Request-Id'],
-    exposedHeaders: ['X-Request-Id'],
+    // Expõe os headers de performance para clientes e ferramentas de monitoramento
+    exposedHeaders: ['X-Request-Id', 'X-Response-Time', 'Server-Timing'],
   });
 
   app.use((req: Request, res: Response, next: () => void) => {
@@ -51,11 +53,33 @@ async function bootstrap() {
   const logger = app.select(ObservabilityModule).get(StructuredLoggerService, { strict: false });
 
   app.useGlobalFilters(new HttpExceptionFilter(logger));
-  app.useGlobalInterceptors(new RequestLoggingInterceptor(logger), new ResponseInterceptor());
+  app.useGlobalInterceptors(
+    // Speed Insights primeiro — mede o tempo total incluindo outros interceptors
+    new VercelSpeedInsightsInterceptor(logger),
+    new RequestLoggingInterceptor(logger),
+    new ResponseInterceptor(),
+  );
 
   const prismaService = app.get(PrismaService);
+
+  // CORRIGIDO: trata SIGTERM e SIGINT além de beforeExit
+  // beforeExit não dispara em process.exit() explícito ou sinais de SO
+  const shutdown = async (signal: string) => {
+    logger.log(`app.shutdown`, { signal });
+    await app.close();
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
   await prismaService.enableShutdownHooks(app);
 
   await app.listen(process.env.PORT ?? 3001);
+
+  logger.log('app.started', {
+    port: process.env.PORT ?? 3001,
+    env: process.env.NODE_ENV ?? 'development',
+  });
 }
+
 bootstrap();

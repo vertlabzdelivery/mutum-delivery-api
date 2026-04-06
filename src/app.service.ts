@@ -2,6 +2,16 @@ import { Injectable } from '@nestjs/common';
 import { RedisCacheService } from './cache/cache.service';
 import { PrismaService } from './prisma/prisma.service';
 
+/** Escapa caracteres HTML para evitar XSS na status page. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 @Injectable()
 export class AppService {
   constructor(
@@ -14,35 +24,64 @@ export class AppService {
     const blobEnabled = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
     const smsEnabled = Boolean(process.env.APIBRASIL_BEARER_TOKEN);
     const pushEnabled = process.env.EXPO_PUSH_ENABLED !== 'false';
-    return {
-      redis: redisEnabled,
-      blob: blobEnabled,
-      sms: smsEnabled,
-      push: pushEnabled,
-    };
+    return { redis: redisEnabled, blob: blobEnabled, sms: smsEnabled, push: pushEnabled };
   }
 
   async getHello(): Promise<string> {
     const cache = await this.cache.getStatus();
     const db = await this.getDatabaseStatus();
     const integrations = this.getIntegrationStatus();
+
     const items = [
       { label: 'API', ok: true, detail: 'Operando normalmente' },
-      { label: 'Banco', ok: db.ok, detail: db.ok ? `Conectado • ${db.latencyMs}ms` : `Falha • ${db.error ?? 'sem detalhe'}` },
-      { label: 'Redis / Cache', ok: cache.enabled && cache.connected, detail: cache.enabled ? (cache.connected ? 'Conectado e pronto' : 'Configurado, mas sem conexão') : 'Desativado' },
-      { label: 'Blob', ok: integrations.blob, detail: integrations.blob ? 'Upload de imagens habilitado' : 'Token ausente' },
-      { label: 'SMS / APIBrasil', ok: integrations.sms, detail: integrations.sms ? 'Verificação por SMS disponível' : 'Bearer token ausente' },
-      { label: 'Expo Push', ok: integrations.push, detail: integrations.push ? 'Envio de push habilitado' : 'Desativado por ambiente' },
+      {
+        label: 'Banco',
+        ok: db.ok,
+        detail: db.ok
+          ? `Conectado • ${db.latencyMs}ms`
+          : `Falha • ${db.error ?? 'sem detalhe'}`,
+      },
+      {
+        label: 'Redis / Cache',
+        ok: cache.enabled && cache.connected,
+        detail: cache.enabled
+          ? cache.connected
+            ? 'Conectado e pronto'
+            : 'Configurado, mas sem conexão'
+          : 'Desativado',
+      },
+      {
+        label: 'Blob',
+        ok: integrations.blob,
+        detail: integrations.blob ? 'Upload de imagens habilitado' : 'Token ausente',
+      },
+      {
+        label: 'SMS / APIBrasil',
+        ok: integrations.sms,
+        detail: integrations.sms ? 'Verificação por SMS disponível' : 'Bearer token ausente',
+      },
+      {
+        label: 'Expo Push',
+        ok: integrations.push,
+        detail: integrations.push ? 'Envio de push habilitado' : 'Desativado por ambiente',
+      },
     ];
-    const cards = items.map((item) => `
+
+    // SEGURANÇA CORRIGIDA: escapa o HTML de todos os campos dinâmicos
+    // para evitar XSS caso algum valor venha de variável de ambiente maliciosa
+    const cards = items
+      .map(
+        (item) => `
       <article class="item ${item.ok ? 'ok' : 'warn'}">
         <div class="dot"></div>
         <div>
-          <strong>${item.label}: ${item.ok ? 'OK' : 'Pendente'}</strong>
-          <p>${item.detail}</p>
+          <strong>${escapeHtml(item.label)}: ${item.ok ? 'OK' : 'Pendente'}</strong>
+          <p>${escapeHtml(item.detail)}</p>
         </div>
       </article>
-    `).join('');
+    `,
+      )
+      .join('');
 
     return `<!doctype html>
 <html lang="pt-BR">
@@ -52,7 +91,7 @@ export class AppService {
   <title>UaiPede API</title>
   <style>
     :root { color-scheme: light; --bg:#fff8f4; --card:#fff; --text:#241d1c; --muted:#6d5d59; --red:#dd1c1a; --line:#f1d7d2; --ok:#1f8f55; --warn:#c07418; }
-    * { box-sizing: border-box; } body { margin:0; min-height:100vh; padding:24px; display:grid; place-items:center; font-family:Inter,Arial,sans-serif; color:var(--text); background:radial-gradient(circle at top right, rgba(221,28,26,.10), transparent 28%), linear-gradient(180deg,#fff7f1 0%,#fffdfb 100%);} 
+    * { box-sizing: border-box; } body { margin:0; min-height:100vh; padding:24px; display:grid; place-items:center; font-family:Inter,Arial,sans-serif; color:var(--text); background:radial-gradient(circle at top right, rgba(221,28,26,.10), transparent 28%), linear-gradient(180deg,#fff7f1 0%,#fffdfb 100%);}
     .card{width:min(100%,860px);background:var(--card);border:1px solid var(--line);border-radius:30px;padding:32px;box-shadow:0 24px 64px rgba(90,36,31,.12)}
     .hero{display:flex;gap:16px;align-items:center;margin-bottom:18px}.mark{width:64px;height:64px;border-radius:20px;display:grid;place-items:center;background:linear-gradient(135deg,#f33b39,var(--red));color:#fff;font-weight:900;font-size:22px}
     h1{margin:0 0 6px;font-size:2rem} p{margin:0;color:var(--muted);line-height:1.55}
@@ -83,32 +122,16 @@ export class AppService {
 </html>`;
   }
 
-  async getHealth() {
-    const database = await this.getDatabaseStatus();
-    return {
-      ok: database.ok,
-      service: 'uai-pede-api',
-      timestamp: new Date().toISOString(),
-      cache: await this.cache.getStatus(),
-      database,
-      integrations: this.getIntegrationStatus(),
-    };
-  }
-
-  private async getDatabaseStatus() {
-    const startedAt = Date.now();
-
+  private async getDatabaseStatus(): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
+    const start = Date.now();
     try {
       await this.prisma.$queryRaw`SELECT 1`;
-      return {
-        ok: true,
-        latencyMs: Date.now() - startedAt,
-      };
+      return { ok: true, latencyMs: Date.now() - start };
     } catch (error) {
       return {
         ok: false,
-        latencyMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : 'Erro desconhecido',
+        latencyMs: Date.now() - start,
+        error: error instanceof Error ? error.message : 'erro desconhecido',
       };
     }
   }
