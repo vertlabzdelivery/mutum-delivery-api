@@ -253,6 +253,7 @@ export class AuthService {
     return {
       message: started.message,
       sessionId: session.id,
+      verificationId: session.id,
       phone: started.normalizedPhone,
       channel: started.channel,
       nextAllowedAt,
@@ -430,6 +431,7 @@ export class AuthService {
     return {
       message: started.message,
       sessionId: session.id,
+      verificationId: session.id,
       phone: started.normalizedPhone,
       channel: started.channel,
       nextAllowedAt,
@@ -439,9 +441,11 @@ export class AuthService {
   }
 
   async confirmPhoneVerification(userId: string, dto: ConfirmPhoneVerificationDto) {
-    const session = dto.verificationId
+    const verificationId = dto.verificationId || dto.sessionId;
+
+    const session = verificationId
       ? await this.prisma.phoneVerificationSession.findFirst({
-          where: { id: dto.verificationId, userId, status: 'PENDING' },
+          where: { id: verificationId, userId, status: 'PENDING' },
         })
       : await this.prisma.phoneVerificationSession.findFirst({
           where: { userId, status: 'PENDING' },

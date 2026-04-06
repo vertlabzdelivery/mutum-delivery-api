@@ -1,8 +1,13 @@
-import { IsString, MinLength } from "class-validator";
+import { IsOptional, IsString, MinLength } from "class-validator";
 
 export class ConfirmPhoneVerificationDto {
+  @IsOptional()
   @IsString()
-  verificationId: string;
+  verificationId?: string;
+
+  @IsOptional()
+  @IsString()
+  sessionId?: string;
 
   @IsString()
   @MinLength(4)
