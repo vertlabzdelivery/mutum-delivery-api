@@ -20,12 +20,14 @@ import { ValidateCouponDto } from './dto/validate-coupon.dto';
 import { CreatePromotionalCouponDto } from './dto/create-promotional-coupon.dto';
 import { UpdatePromotionalCouponDto } from './dto/update-promotional-coupon.dto';
 import { ListPromotionalCouponsDto } from './dto/list-promotional-coupons.dto';
+import { AblyRealtimeService } from '../notifications/ably-realtime.service';
 
 @Injectable()
 export class CouponsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly ablyRealtimeService: AblyRealtimeService,
   ) {}
 
   async validateCouponPreview(userId: string, dto: ValidateCouponDto) {
@@ -152,6 +154,28 @@ export class CouponsService {
   }
 
   async handleOrderStatusChange(orderId: string, newStatus: OrderStatus) {
+    if (newStatus === OrderStatus.CANCELED) {
+      await this.prisma.$transaction(async (tx) => {
+        const usage = await tx.referralUsage.findUnique({
+          where: { orderId },
+          include: { reward: true },
+        });
+
+        if (!usage) return;
+
+        if (usage.reward?.status === ReferralRewardStatus.USED) {
+          return;
+        }
+
+        if (usage.reward && usage.reward.status !== ReferralRewardStatus.USED) {
+          await tx.referralReward.delete({ where: { id: usage.reward.id } });
+        }
+
+        await tx.referralUsage.delete({ where: { id: usage.id } });
+      });
+      return;
+    }
+
     if (newStatus !== OrderStatus.ACCEPTED) {
       return;
     }
@@ -226,7 +250,7 @@ export class CouponsService {
     this.ensureDateWindow(dto.startsAt, dto.endsAt);
 
     try {
-      return await this.prisma.promotionalCoupon.create({
+      const createdCoupon = await this.prisma.promotionalCoupon.create({
         data: {
           code,
           discountType: DiscountType.PERCENT,
@@ -243,6 +267,22 @@ export class CouponsService {
           createdByAdminId: adminUserId,
         },
       });
+
+      await this.ablyRealtimeService.publishPromotionalCouponCreated({
+        id: createdCoupon.id,
+        code: createdCoupon.code,
+        discountType: createdCoupon.discountType,
+        discountValue: Number(createdCoupon.discountValue),
+        maxDiscountAmount: createdCoupon.maxDiscountAmount ? Number(createdCoupon.maxDiscountAmount) : null,
+        minOrderAmount: Number(createdCoupon.minOrderAmount),
+        maxUses: createdCoupon.maxUses,
+        usedCount: createdCoupon.usedCount,
+        remainingUses: Math.max(0, createdCoupon.maxUses - createdCoupon.usedCount),
+        startsAt: createdCoupon.startsAt?.toISOString() ?? null,
+        endsAt: createdCoupon.endsAt?.toISOString() ?? null,
+      });
+
+      return createdCoupon;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         throw new ConflictException('Já existe um cupom promocional com este código.');
@@ -270,6 +310,52 @@ export class CouponsService {
     ]);
 
     return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+  }
+
+  async listPublicPromotionalCoupons(query: ListPromotionalCouponsDto) {
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 50);
+    const skip = (page - 1) * limit;
+    const now = new Date();
+
+    const where: Prisma.PromotionalCouponWhereInput = {
+      isActive: true,
+      ...(query.code ? { code: { contains: normalizeCouponCode(query.code) } } : {}),
+      AND: [
+        { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
+        { OR: [{ endsAt: null }, { endsAt: { gte: now } }] },
+      ],
+    };
+
+    const [data, total] = await Promise.all([
+      this.prisma.promotionalCoupon.findMany({
+        where,
+        orderBy: [{ endsAt: 'asc' }, { createdAt: 'desc' }],
+        skip,
+        take: limit,
+      }),
+      this.prisma.promotionalCoupon.count({ where }),
+    ]);
+
+    return {
+      data: data.map((coupon) => ({
+        id: coupon.id,
+        code: coupon.code,
+        discountType: coupon.discountType,
+        discountValue: coupon.discountValue,
+        maxDiscountAmount: coupon.maxDiscountAmount,
+        minOrderAmount: coupon.minOrderAmount,
+        maxUses: coupon.maxUses,
+        usedCount: coupon.usedCount,
+        remainingUses: Math.max(0, coupon.maxUses - coupon.usedCount),
+        isActive: coupon.isActive,
+        startsAt: coupon.startsAt,
+        endsAt: coupon.endsAt,
+        createdAt: coupon.createdAt,
+        updatedAt: coupon.updatedAt,
+      })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
   }
 
   async getPromotionalCouponById(id: string) {
@@ -339,7 +425,6 @@ export class CouponsService {
           referralUsage: {
             select: {
               referredUser: { select: { id: true, name: true, email: true } },
-              order: { select: { id: true, createdAt: true, total: true } },
             },
           },
         },
@@ -373,7 +458,6 @@ export class CouponsService {
         where: { referralOwnerUserId: userId },
         include: {
           referredUser: { select: { id: true, name: true, email: true } },
-          order: { select: { id: true, status: true, total: true, createdAt: true } },
           reward: { select: { id: true, code: true, status: true, grantedAt: true, usedAt: true } },
         },
         orderBy: { createdAt: 'desc' },
@@ -382,7 +466,6 @@ export class CouponsService {
         where: { referredUserId: userId },
         include: {
           referralOwnerUser: { select: { id: true, name: true, email: true, referralCode: true } },
-          order: { select: { id: true, status: true, total: true, createdAt: true } },
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -403,6 +486,7 @@ export class CouponsService {
   ): Promise<CouponValidationOutput> {
     const normalizedCode = normalizeCouponCode(params.couponCode);
     const totalBeforeDiscount = params.subtotal.plus(params.deliveryFee);
+    const discountBase = params.subtotal;
 
     if (!isAlphanumericCouponCode(normalizedCode)) {
       return this.invalid(normalizedCode, totalBeforeDiscount, 'Cupom inválido.');
@@ -440,7 +524,7 @@ export class CouponsService {
         availableReward.discountType,
         availableReward.discountValue,
         availableReward.maxDiscountAmount,
-        totalBeforeDiscount,
+        discountBase,
       );
       return this.valid({
         type: CouponType.REFERRAL_REWARD,
@@ -471,7 +555,7 @@ export class CouponsService {
       if (promotionalCoupon.usedCount >= promotionalCoupon.maxUses) {
         return this.invalid(normalizedCode, totalBeforeDiscount, 'Este cupom promocional atingiu o limite de uso.');
       }
-      if (totalBeforeDiscount.lessThan(promotionalCoupon.minOrderAmount)) {
+      if (params.subtotal.lessThan(promotionalCoupon.minOrderAmount)) {
         return this.invalid(
           normalizedCode,
           totalBeforeDiscount,
@@ -483,7 +567,7 @@ export class CouponsService {
         promotionalCoupon.discountType,
         promotionalCoupon.discountValue,
         promotionalCoupon.maxDiscountAmount,
-        totalBeforeDiscount,
+        discountBase,
       );
 
       return this.valid({
@@ -520,7 +604,7 @@ export class CouponsService {
       }
 
       const config = this.getReferralDiscountConfig();
-      const discount = this.computeDiscount(config.type, config.value, config.maxDiscount, totalBeforeDiscount);
+      const discount = this.computeDiscount(config.type, config.value, config.maxDiscount, discountBase);
 
       return this.valid({
         type: CouponType.REFERRAL,

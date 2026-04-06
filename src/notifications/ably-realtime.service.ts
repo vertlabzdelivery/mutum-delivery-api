@@ -63,6 +63,10 @@ export class AblyRealtimeService {
     return `${this.channelPrefix}:${restaurantId}:orders`;
   }
 
+  getPublicCouponsChannelName() {
+    return `${this.channelPrefix}:public:coupons`;
+  }
+
   async publishNewOrder(restaurantId: string, payload: Record<string, unknown>) {
     if (!this.isEnabled() || !restaurantId) return;
     await this.publishToChannel(restaurantId, 'new-order', payload);
@@ -76,14 +80,30 @@ export class AblyRealtimeService {
     await this.publishToChannel(restaurantId, 'order-status-changed', payload);
   }
 
+  async publishPromotionalCouponCreated(payload: Record<string, unknown>) {
+    if (!this.isEnabled()) return;
+    await this.publishToAbsoluteChannel(this.getPublicCouponsChannelName(), 'coupon-created', payload);
+  }
+
   private async publishToChannel(
     restaurantId: string,
     eventName: string,
     payload: Record<string, unknown>,
   ) {
+    return this.publishToAbsoluteChannel(this.getRestaurantOrdersChannelName(restaurantId), eventName, {
+      ...payload,
+      restaurantId,
+    });
+  }
+
+  private async publishToAbsoluteChannel(
+    channelName: string,
+    eventName: string,
+    payload: Record<string, unknown>,
+  ) {
     try {
       const response = await fetch(
-        `${this.restBaseUrl}/channels/${encodeURIComponent(this.getRestaurantOrdersChannelName(restaurantId))}/messages`,
+        `${this.restBaseUrl}/channels/${encodeURIComponent(channelName)}/messages`,
         {
           method: 'POST',
           headers: {
@@ -94,7 +114,6 @@ export class AblyRealtimeService {
             name: eventName,
             data: {
               ...payload,
-              restaurantId,
               sentAt: new Date().toISOString(),
             },
           }),
@@ -107,11 +126,44 @@ export class AblyRealtimeService {
       }
     } catch (error) {
       this.logger.warn(
-        `Falha ao publicar evento Ably '${eventName}' restaurante ${restaurantId}: ${
+        `Falha ao publicar evento Ably '${eventName}' no canal ${channelName}: ${
           error instanceof Error ? error.message : 'erro desconhecido'
         }`,
       );
     }
+  }
+
+  async createCustomerCouponsToken(currentUser: CurrentUserData) {
+    const { keyName, keySecret } = this.parseApiKey();
+
+    const now = Math.floor(Date.now() / 1000);
+    const ttl = this.tokenTtlSeconds;
+    const expiresAt = now + ttl;
+
+    const capability = JSON.stringify({
+      [this.getPublicCouponsChannelName()]: ['subscribe'],
+    });
+
+    const token = await this.jwtService.signAsync(
+      {
+        iat: now,
+        exp: expiresAt,
+        'x-ably-capability': capability,
+        'x-ably-clientId': `customer:${currentUser.userId}`,
+      },
+      {
+        algorithm: 'HS256',
+        secret: keySecret,
+        header: { alg: 'HS256', kid: keyName, typ: 'JWT' },
+      },
+    );
+
+    return {
+      token,
+      ttlSeconds: ttl,
+      expiresAt: new Date(expiresAt * 1000).toISOString(),
+      channel: this.getPublicCouponsChannelName(),
+    };
   }
 
   async createRestaurantPanelToken(

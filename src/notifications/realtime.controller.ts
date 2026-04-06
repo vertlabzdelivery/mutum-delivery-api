@@ -8,6 +8,12 @@ import { AblyRealtimeService } from './ably-realtime.service';
 export class RealtimeController {
   constructor(private readonly ablyRealtimeService: AblyRealtimeService) {}
 
+  @UseGuards(JwtAuthGuard)
+  @Get('customer-token')
+  customerToken(@CurrentUser() user: CurrentUserData) {
+    return this.ablyRealtimeService.createCustomerCouponsToken(user);
+  }
+
   /**
    * Gera um token JWT Ably para o painel do restaurante.
    *
