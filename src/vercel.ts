@@ -1,36 +1,85 @@
 /**
  * Entry point exclusivo para o Vercel Serverless.
  *
- * O Vercel exige que o arquivo aponte para uma função exportada como `default`.
- * A app NestJS é inicializada uma única vez e reutilizada entre invocações
- * da mesma instância (warm start), reduzindo cold start em ~70%.
+ * O Vercel invoca este arquivo como uma serverless function.
+ * A app NestJS é inicializada uma única vez e reutilizada entre
+ * invocações da mesma instância (warm start).
  */
+import * as express from 'express';
 import type { IncomingMessage, ServerResponse } from 'http';
-import { setupApp } from './main';
+import { NestFactory } from '@nestjs/core';
+import { ExpressAdapter } from '@nestjs/platform-express';
+import { ValidationPipe } from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import type { Request, Response } from 'express';
 
-type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
+import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import type { RequestContextData } from './common/interfaces/request-context.interface';
+import { ObservabilityModule } from './observability/observability.module';
+import { RequestLoggingInterceptor } from './observability/request-logging.interceptor';
+import { StructuredLoggerService } from './observability/structured-logger.service';
+import { VercelSpeedInsightsInterceptor } from './observability/vercel-speed-insights.interceptor';
 
-let cachedHandler: RequestHandler | null = null;
+// Express app compartilhado entre invocações (warm start)
+const expressApp = express();
+let initialized = false;
 
-async function getHandler(): Promise<RequestHandler> {
-  if (cachedHandler) return cachedHandler;
+async function bootstrap() {
+  if (initialized) return expressApp;
 
-  const { app } = await setupApp();
+  const adapter = new ExpressAdapter(expressApp);
+  const app = await NestFactory.create(AppModule, adapter, { bufferLogs: false });
 
-  // app.init() finaliza o setup sem abrir porta TCP
+  const corsOrigins = process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim())
+    : true;
+
+  app.enableCors({
+    origin: corsOrigins,
+    credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Request-Id'],
+    exposedHeaders: ['X-Request-Id', 'X-Response-Time', 'Server-Timing'],
+  });
+
+  app.use((req: Request, res: Response, next: () => void) => {
+    const request = req as Request & RequestContextData;
+    const forwardedFor = req.headers['x-forwarded-for'];
+    const firstForwardedIp = Array.isArray(forwardedFor)
+      ? forwardedFor[0]
+      : String(forwardedFor || '').split(',')[0]?.trim();
+
+    request.requestId = String(req.headers['x-request-id'] || randomUUID());
+    request.clientIp = firstForwardedIp || req.ip || req.socket.remoteAddress || 'unknown';
+    request.startedAt = Date.now();
+    res.setHeader('X-Request-Id', request.requestId);
+    next();
+  });
+
+  app.useGlobalPipes(
+    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+  );
+
+  const logger = app.select(ObservabilityModule).get(StructuredLoggerService, { strict: false });
+
+  app.useGlobalFilters(new HttpExceptionFilter(logger));
+  app.useGlobalInterceptors(
+    new VercelSpeedInsightsInterceptor(logger),
+    new RequestLoggingInterceptor(logger),
+    new ResponseInterceptor(),
+  );
+
+  // init() em vez de listen() — não abre porta TCP no Vercel
   await app.init();
 
-  // Obtém o handler Express subjacente ao NestJS
-  const httpServer = app.getHttpServer() as any;
-  cachedHandler =
-    httpServer._events?.request ??
-    ((req: IncomingMessage, res: ServerResponse) => httpServer.emit('request', req, res));
-
-  return cachedHandler!;
+  initialized = true;
+  return expressApp;
 }
 
-// Handler exportado que o Vercel invoca a cada requisição
+// Handler padrão exportado — o Vercel chama isso em cada requisição
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
-  const fn = await getHandler();
-  fn(req, res);
+  const app = await bootstrap();
+  app(req, res);
 }

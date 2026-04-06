@@ -12,8 +12,8 @@ import { StructuredLoggerService } from './observability/structured-logger.servi
 import { VercelSpeedInsightsInterceptor } from './observability/vercel-speed-insights.interceptor';
 import { PrismaService } from './prisma/prisma.service';
 
-// setupApp é exportado e reutilizado pelo handler do Vercel (src/vercel.ts)
-export async function setupApp() {
+// Usado apenas para execução local / Railway / Render (não pelo Vercel)
+async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
 
   const corsOrigins = process.env.CORS_ORIGIN
@@ -43,11 +43,7 @@ export async function setupApp() {
   });
 
   app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
+    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
   );
 
   const logger = app.select(ObservabilityModule).get(StructuredLoggerService, { strict: false });
@@ -58,13 +54,6 @@ export async function setupApp() {
     new RequestLoggingInterceptor(logger),
     new ResponseInterceptor(),
   );
-
-  return { app, logger };
-}
-
-// Bootstrap padrão para execução local e outros ambientes (Railway, Render, etc.)
-async function bootstrap() {
-  const { app, logger } = await setupApp();
 
   const prismaService = app.get(PrismaService);
 
@@ -86,7 +75,4 @@ async function bootstrap() {
   });
 }
 
-// Executa apenas quando chamado diretamente (não pelo Vercel)
-if (process.env.VERCEL !== '1') {
-  bootstrap();
-}
+bootstrap();

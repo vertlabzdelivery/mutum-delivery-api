@@ -27,6 +27,37 @@ export class AppService {
     return { redis: redisEnabled, blob: blobEnabled, sms: smsEnabled, push: pushEnabled };
   }
 
+  /**
+   * Retorna JSON de saúde da API — usado em GET / e GET /health.
+   * Ideal para health checks de uptime monitors (UptimeRobot, BetterStack, etc.)
+   */
+  async getHealth() {
+    const cache = await this.cache.getStatus();
+    const db = await this.getDatabaseStatus();
+    const integrations = this.getIntegrationStatus();
+
+    const allOk = db.ok && (!cache.enabled || cache.connected);
+
+    return {
+      ok: allOk,
+      timestamp: new Date().toISOString(),
+      services: {
+        api: { ok: true },
+        database: { ok: db.ok, latencyMs: db.latencyMs, error: db.error ?? null },
+        cache: {
+          ok: !cache.enabled || cache.connected,
+          enabled: cache.enabled,
+          connected: cache.connected,
+          store: cache.store,
+        },
+        blob: { ok: integrations.blob },
+        sms: { ok: integrations.sms },
+        push: { ok: integrations.push },
+      },
+    };
+  }
+
+  /** Retorna a página HTML de status — acessível em GET /ui */
   async getHello(): Promise<string> {
     const cache = await this.cache.getStatus();
     const db = await this.getDatabaseStatus();
@@ -67,8 +98,6 @@ export class AppService {
       },
     ];
 
-    // SEGURANÇA CORRIGIDA: escapa o HTML de todos os campos dinâmicos
-    // para evitar XSS caso algum valor venha de variável de ambiente maliciosa
     const cards = items
       .map(
         (item) => `
