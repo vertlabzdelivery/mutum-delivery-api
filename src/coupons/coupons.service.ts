@@ -11,6 +11,7 @@ import {
   Prisma,
   ReferralRewardStatus,
   ReferralUsageStatus,
+  Role,
 } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
@@ -21,6 +22,7 @@ import { CreatePromotionalCouponDto } from './dto/create-promotional-coupon.dto'
 import { UpdatePromotionalCouponDto } from './dto/update-promotional-coupon.dto';
 import { ListPromotionalCouponsDto } from './dto/list-promotional-coupons.dto';
 import { AblyRealtimeService } from '../notifications/ably-realtime.service';
+import { PushNotificationsService } from '../notifications/push-notifications.service';
 
 @Injectable()
 export class CouponsService {
@@ -28,6 +30,7 @@ export class CouponsService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly ablyRealtimeService: AblyRealtimeService,
+    private readonly pushNotificationsService: PushNotificationsService,
   ) {}
 
   async validateCouponPreview(userId: string, dto: ValidateCouponDto) {
@@ -281,6 +284,8 @@ export class CouponsService {
         startsAt: createdCoupon.startsAt?.toISOString() ?? null,
         endsAt: createdCoupon.endsAt?.toISOString() ?? null,
       });
+
+      void this.notifyUsersAboutNewPromotionalCoupon(createdCoupon).catch(() => undefined);
 
       return createdCoupon;
     } catch (error) {
@@ -708,6 +713,57 @@ export class CouponsService {
       value,
       maxDiscount: maxDiscountValue ? new Prisma.Decimal(maxDiscountValue) : null,
     };
+  }
+
+
+  private async notifyUsersAboutNewPromotionalCoupon(coupon: {
+    id: string;
+    code: string;
+    discountValue: Prisma.Decimal;
+    maxDiscountAmount: Prisma.Decimal | null;
+    minOrderAmount: Prisma.Decimal;
+    endsAt: Date | null;
+  }) {
+    const users = await this.prisma.user.findMany({
+      where: {
+        role: Role.USER,
+        isActive: true,
+        deletedAt: null,
+        expoPushToken: { not: null },
+      },
+      select: {
+        id: true,
+        expoPushToken: true,
+      },
+    });
+
+    if (!users.length) return;
+
+    const title = 'Novo cupom disponível';
+    const maxDiscountText = coupon.maxDiscountAmount
+      ? ` • até R$ ${Number(coupon.maxDiscountAmount).toFixed(2).replace('.', ',')}`
+      : '';
+    const minOrderText = Number(coupon.minOrderAmount) > 0
+      ? ` • pedido mínimo R$ ${Number(coupon.minOrderAmount).toFixed(2).replace('.', ',')}`
+      : '';
+    const endsAtText = coupon.endsAt
+      ? ` • válido até ${coupon.endsAt.toLocaleDateString('pt-BR')}`
+      : '';
+    const body = `Use ${coupon.code} e ganhe ${Number(coupon.discountValue).toFixed(0)}% de desconto${maxDiscountText}${minOrderText}${endsAtText}`;
+
+    await Promise.allSettled(
+      users.map((user) =>
+        this.pushNotificationsService.sendToExpoPushToken(String(user.expoPushToken || ''), {
+          title,
+          body,
+          data: {
+            type: 'NEW_PROMOTIONAL_COUPON',
+            couponId: coupon.id,
+            couponCode: coupon.code,
+          },
+        }),
+      ),
+    );
   }
 
   private ensureDateWindow(startsAt?: string, endsAt?: string) {

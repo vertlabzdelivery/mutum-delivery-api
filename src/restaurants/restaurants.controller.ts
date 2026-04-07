@@ -1,11 +1,13 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ReplaceOpeningHoursDto } from './dto/replace-opening-hours.dto';
@@ -19,6 +21,7 @@ import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
 import { UpdateRestaurantStatusDto } from './dto/update-restaurant-status.dto';
 import { RestaurantsService } from './restaurants.service';
+import { UpsertRestaurantReviewDto } from './dto/upsert-restaurant-review.dto';
 
 @Controller('restaurants')
 export class RestaurantsController {
@@ -35,10 +38,13 @@ export class RestaurantsController {
     @Param('addressId', new ParseUUIDPipe()) addressId: string,
     @CurrentUser() user: CurrentUserData,
   ) {
-    return this.restaurantsService.findAvailableByAddress(
-      addressId,
-      user.userId,
-    );
+    return this.restaurantsService.findAvailableByAddress(addressId, user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('my/favorites')
+  findMyFavorites(@CurrentUser() user: CurrentUserData) {
+    return this.restaurantsService.findFavoriteRestaurants(user.userId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -53,11 +59,56 @@ export class RestaurantsController {
     return this.restaurantsService.findAll();
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/favorite')
+  favorite(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.restaurantsService.favoriteRestaurant(id, user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete(':id/favorite')
+  unfavorite(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.restaurantsService.unfavoriteRestaurant(id, user.userId);
+  }
+
+  @Get(':id/reviews')
+  listReviews(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.restaurantsService.listRestaurantReviews(id, Number(page || 1), Number(limit || 20));
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/reviews/me')
+  getMyReview(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: CurrentUserData,
+  ) {
+    return this.restaurantsService.getMyRestaurantReview(id, user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/reviews')
+  upsertReview(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: CurrentUserData,
+    @Body() dto: UpsertRestaurantReviewDto,
+  ) {
+    return this.restaurantsService.upsertRestaurantReview(id, user.userId, dto);
+  }
+
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.restaurantsService.findOne(id);
   }
-
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN, Role.RESTAURANT)

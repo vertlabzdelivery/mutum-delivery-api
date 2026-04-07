@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, Role } from '@prisma/client';
+import { OrderStatus, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CurrentUserData } from '../common/interfaces/current-user.interface';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
@@ -12,6 +12,7 @@ import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
 import { ReplaceOpeningHoursDto } from './dto/replace-opening-hours.dto';
 import { RedisCacheService } from '../cache/cache.service';
 import { CacheKeys, getRestaurantMenuCacheKeys } from '../cache/cache.keys';
+import { UpsertRestaurantReviewDto } from './dto/upsert-restaurant-review.dto';
 
 @Injectable()
 export class RestaurantsService {
@@ -160,6 +161,10 @@ export class RestaurantsService {
       },
       include: {
         ...this.restaurantInclude(false),
+        favorites: {
+          where: { userId },
+          select: { id: true },
+        },
         deliveryZones: {
           where: {
             neighborhoodId: address.neighborhoodId,
@@ -182,6 +187,191 @@ export class RestaurantsService {
     });
 
     return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
+  }
+
+  async findFavoriteRestaurants(userId: string) {
+    const favorites = await this.prisma.restaurantFavorite.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        restaurant: {
+          include: {
+            ...this.restaurantInclude(false),
+            favorites: {
+              where: { userId },
+              select: { id: true },
+            },
+          },
+        },
+      },
+    });
+
+    return favorites.map((entry) => ({
+      favoritedAt: entry.createdAt,
+      restaurant: this.serializeRestaurant(entry.restaurant),
+    }));
+  }
+
+  async favoriteRestaurant(restaurantId: string, userId: string) {
+    await this.ensureRestaurantPubliclyAvailable(restaurantId);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.restaurantFavorite.upsert({
+        where: {
+          userId_restaurantId: {
+            userId,
+            restaurantId,
+          },
+        },
+        create: {
+          userId,
+          restaurantId,
+        },
+        update: {},
+      });
+
+      await this.refreshRestaurantFavoriteCount(restaurantId, tx);
+    });
+
+    await this.invalidateRestaurantPublicCache(restaurantId);
+
+    return {
+      ok: true,
+      isFavorite: true,
+      restaurantId,
+    };
+  }
+
+  async unfavoriteRestaurant(restaurantId: string, userId: string) {
+    await this.ensureRestaurantPubliclyAvailable(restaurantId);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.restaurantFavorite.deleteMany({
+        where: {
+          userId,
+          restaurantId,
+        },
+      });
+
+      await this.refreshRestaurantFavoriteCount(restaurantId, tx);
+    });
+
+    await this.invalidateRestaurantPublicCache(restaurantId);
+
+    return {
+      ok: true,
+      isFavorite: false,
+      restaurantId,
+    };
+  }
+
+  async listRestaurantReviews(restaurantId: string, page = 1, limit = 20) {
+    await this.ensureRestaurantPubliclyAvailable(restaurantId);
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(Math.max(1, limit), 100);
+    const skip = (safePage - 1) * safeLimit;
+
+    const [data, total, restaurant] = await Promise.all([
+      this.prisma.restaurantReview.findMany({
+        where: { restaurantId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+        orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+        skip,
+        take: safeLimit,
+      }),
+      this.prisma.restaurantReview.count({ where: { restaurantId } }),
+      this.prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: {
+          id: true,
+          averageRating: true,
+          ratingCount: true,
+        },
+      }),
+    ]);
+
+    return {
+      restaurantId,
+      summary: {
+        averageRating: Number(restaurant?.averageRating ?? 0),
+        ratingCount: restaurant?.ratingCount ?? 0,
+      },
+      data,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(total / safeLimit),
+      },
+    };
+  }
+
+  async getMyRestaurantReview(restaurantId: string, userId: string) {
+    await this.ensureRestaurantPubliclyAvailable(restaurantId);
+    return this.prisma.restaurantReview.findUnique({
+      where: {
+        userId_restaurantId: {
+          userId,
+          restaurantId,
+        },
+      },
+    });
+  }
+
+  async upsertRestaurantReview(
+    restaurantId: string,
+    userId: string,
+    dto: UpsertRestaurantReviewDto,
+  ) {
+    await this.ensureRestaurantPubliclyAvailable(restaurantId);
+
+    const deliveredOrdersCount = await this.prisma.order.count({
+      where: {
+        userId,
+        restaurantId,
+        status: OrderStatus.DELIVERED,
+      },
+    });
+
+    if (deliveredOrdersCount <= 0) {
+      throw new BadRequestException(
+        'Você só pode avaliar restaurantes após receber pelo menos um pedido.',
+      );
+    }
+
+    const review = await this.prisma.$transaction(async (tx) => {
+      const saved = await tx.restaurantReview.upsert({
+        where: {
+          userId_restaurantId: {
+            userId,
+            restaurantId,
+          },
+        },
+        create: {
+          userId,
+          restaurantId,
+          rating: dto.rating,
+          comment: dto.comment?.trim() || null,
+        },
+        update: {
+          rating: dto.rating,
+          comment: dto.comment?.trim() || null,
+        },
+      });
+
+      await this.refreshRestaurantRatingStats(restaurantId, tx);
+      return saved;
+    });
+
+    await this.invalidateRestaurantPublicCache(restaurantId);
+    return review;
   }
 
   async findOne(id: string) {
@@ -231,6 +421,7 @@ export class RestaurantsService {
     const restaurant = await this.ensureRestaurantExists(id);
 
     this.ensureCanManageRestaurant(restaurant.ownerId, currentUser);
+    this.ensureAdminForcedStatusCanBeChanged(restaurant, dto.isActive, currentUser);
 
     if (dto.cityId) {
       await this.ensureCityExists(dto.cityId);
@@ -268,22 +459,35 @@ export class RestaurantsService {
     const restaurant = await this.ensureRestaurantExists(id);
 
     this.ensureCanManageRestaurant(restaurant.ownerId, currentUser);
+    this.ensureAdminForcedStatusCanBeChanged(restaurant, isActive, currentUser);
 
     const updated = await this.prisma.restaurant.update({
       where: { id },
-      data: {
-        isActive,
-      },
+      data:
+        currentUser.role === Role.ADMIN
+          ? {
+              isActive,
+              adminDisabledAt: isActive ? null : new Date(),
+              adminDisabledByUserId: isActive ? null : currentUser.userId,
+            }
+          : {
+              isActive,
+            },
       select: {
         id: true,
         name: true,
         isActive: true,
+        adminDisabledAt: true,
+        adminDisabledByUserId: true,
         updatedAt: true,
       },
     });
 
     await this.invalidateRestaurantPublicCache(id);
-    return updated;
+    return {
+      ...updated,
+      adminDisabled: Boolean(updated.adminDisabledAt),
+    };
   }
 
   private restaurantInclude(includeOwnerContact = true): Prisma.RestaurantInclude {
@@ -343,6 +547,16 @@ export class RestaurantsService {
       ...restaurant,
       storeCategories,
       categoryNames,
+      isFavorite: Array.isArray((restaurant as any).favorites)
+        ? (restaurant as any).favorites.length > 0
+        : undefined,
+      favoritesCount: Number((restaurant as any).favoritesCount ?? 0),
+      ratingCount: Number((restaurant as any).ratingCount ?? 0),
+      averageRating: Number((restaurant as any).averageRating ?? 0),
+      adminDisabled: Boolean((restaurant as any).adminDisabledAt),
+      adminDisabledMessage: (restaurant as any).adminDisabledAt
+        ? 'Administrador desativou este restaurante.'
+        : null,
       isOpenNow: restaurant.isActive === false ? false : openingStatus.isOpen,
       acceptsOrdersNow: restaurant.isActive === false ? false : openingStatus.isOpen,
       openingStatusLabel:
@@ -436,7 +650,22 @@ export class RestaurantsService {
       select: {
         id: true,
         ownerId: true,
+        adminDisabledAt: true,
+        adminDisabledByUserId: true,
       },
+    });
+
+    if (!restaurant) {
+      throw new NotFoundException('Restaurante não encontrado');
+    }
+
+    return restaurant;
+  }
+
+  private async ensureRestaurantPubliclyAvailable(id: string) {
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id },
+      select: { id: true },
     });
 
     if (!restaurant) {
@@ -467,6 +696,20 @@ export class RestaurantsService {
       throw new ForbiddenException(
         'Você não tem permissão para gerenciar este restaurante',
       );
+    }
+  }
+
+  private ensureAdminForcedStatusCanBeChanged(
+    restaurant: { adminDisabledAt: Date | null },
+    nextIsActive: boolean | undefined,
+    currentUser: CurrentUserData,
+  ) {
+    if (
+      nextIsActive === true &&
+      currentUser.role !== Role.ADMIN &&
+      restaurant.adminDisabledAt
+    ) {
+      throw new ForbiddenException('Administrador desativou este restaurante.');
     }
   }
 
@@ -507,6 +750,38 @@ export class RestaurantsService {
     };
   }
 
+  private async refreshRestaurantFavoriteCount(
+    restaurantId: string,
+    tx: PrismaService | Prisma.TransactionClient,
+  ) {
+    const count = await tx.restaurantFavorite.count({ where: { restaurantId } });
+    await tx.restaurant.update({
+      where: { id: restaurantId },
+      data: { favoritesCount: count },
+    });
+  }
+
+  private async refreshRestaurantRatingStats(
+    restaurantId: string,
+    tx: PrismaService | Prisma.TransactionClient,
+  ) {
+    const aggregate = await tx.restaurantReview.aggregate({
+      where: { restaurantId },
+      _count: { _all: true },
+      _avg: { rating: true },
+    });
+
+    await tx.restaurant.update({
+      where: { id: restaurantId },
+      data: {
+        ratingCount: aggregate._count._all,
+        averageRating: new Prisma.Decimal(
+          Number(aggregate._avg.rating ?? 0).toFixed(2),
+        ),
+      },
+    });
+  }
+
   private async invalidateRestaurantPublicCache(restaurantId: string) {
     await this.cache.delMany([
       CacheKeys.restaurantsAll,
@@ -515,6 +790,5 @@ export class RestaurantsService {
       CacheKeys.publicDeliveryZones(restaurantId),
       ...getRestaurantMenuCacheKeys(restaurantId),
     ]);
-
   }
 }

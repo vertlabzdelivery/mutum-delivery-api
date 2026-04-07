@@ -35,6 +35,9 @@ model User {
   referralUsagesAsReferred ReferralUsage[] @relation("ReferralUsageReferred")
   referralRewards ReferralReward[] @relation("ReferralRewardOwner")
   ordersWithReferralOwner Order[] @relation("OrderReferralOwner")
+  adminDisabledRestaurants Restaurant[] @relation("RestaurantAdminDisabledBy")
+  restaurantFavorites RestaurantFavorite[]
+  restaurantReviews RestaurantReview[]
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -126,10 +129,18 @@ model Restaurant {
   isActive      Boolean  @default(true)
   acceptsReferralCoupons    Boolean  @default(true)
   acceptsPromotionalCoupons Boolean  @default(true)
+  adminDisabledAt DateTime?
+  adminDisabledByUserId String?
+  favoritesCount Int @default(0)
+  ratingCount Int @default(0)
+  averageRating Decimal @default(0) @db.Decimal(3, 2)
 
   owner         User     @relation(fields: [ownerId], references: [id])
   city          City?    @relation(fields: [cityId], references: [id])
+  adminDisabledByUser User? @relation("RestaurantAdminDisabledBy", fields: [adminDisabledByUserId], references: [id])
 
+  favorites      RestaurantFavorite[]
+  reviews        RestaurantReview[]
   menuCategories  MenuCategory[]
   menuItems       MenuItem[]
   orders          Order[]
@@ -144,6 +155,42 @@ model Restaurant {
   @@index([ownerId])
   @@index([cityId])
   @@index([isActive])
+  @@index([adminDisabledAt])
+  @@index([adminDisabledByUserId])
+}
+
+model RestaurantFavorite {
+  id           String   @id @default(uuid())
+  userId       String
+  restaurantId String
+  createdAt    DateTime @default(now())
+
+  user         User      @relation(fields: [userId], references: [id])
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+
+  @@unique([userId, restaurantId])
+  @@index([userId])
+  @@index([restaurantId])
+  @@index([createdAt])
+}
+
+model RestaurantReview {
+  id           String   @id @default(uuid())
+  userId       String
+  restaurantId String
+  rating       Int
+  comment      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user         User      @relation(fields: [userId], references: [id])
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+
+  @@unique([userId, restaurantId])
+  @@index([userId])
+  @@index([restaurantId])
+  @@index([rating])
+  @@index([createdAt])
 }
 
 model StoreCategory {
