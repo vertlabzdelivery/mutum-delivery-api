@@ -193,6 +193,10 @@ export class RestaurantsService {
       },
       include: {
         ...this.restaurantInclude(false),
+        acceptedPaymentMethods: {
+          include: { paymentMethodOption: true },
+          orderBy: { paymentMethodOption: { sortOrder: 'asc' } },
+        },
         favorites: {
           where: { userId },
           select: { id: true },
@@ -231,6 +235,10 @@ export class RestaurantsService {
         restaurant: {
           include: {
             ...this.restaurantInclude(false),
+            acceptedPaymentMethods: {
+              include: { paymentMethodOption: true },
+              orderBy: { paymentMethodOption: { sortOrder: 'asc' } },
+            },
             favorites: {
               where: { userId },
               select: { id: true },
@@ -576,6 +584,14 @@ export class RestaurantsService {
           storeCategory: { sortOrder: 'asc' },
         },
       },
+      acceptedPaymentMethods: {
+        include: {
+          paymentMethodOption: true,
+        },
+        orderBy: {
+          paymentMethodOption: { sortOrder: 'asc' },
+        },
+      },
     };
   }
 
@@ -585,11 +601,27 @@ export class RestaurantsService {
       (entry: any) => entry.storeCategory,
     );
     const categoryNames = storeCategories.map((cat: any) => cat.name);
+    const acceptedPaymentMethodsRaw = (restaurant.acceptedPaymentMethods || []).map(
+      (entry: any) => entry.paymentMethodOption || entry,
+    );
+    const acceptedPaymentMethods = acceptedPaymentMethodsRaw
+      .filter((item: any) => item && item.isActive !== false)
+      .map((item: any) => ({
+        id: item.id,
+        code: item.code,
+        name: item.name,
+        description: item.description ?? null,
+        icon: item.icon ?? null,
+        sortOrder: Number(item.sortOrder ?? 0),
+        isActive: item.isActive !== false,
+      }));
 
     return {
       ...restaurant,
       storeCategories,
       categoryNames,
+      acceptedPaymentMethods,
+      acceptedPaymentMethodCodes: acceptedPaymentMethods.map((item: any) => item.code),
       isFavorite: Array.isArray((restaurant as any).favorites)
         ? (restaurant as any).favorites.length > 0
         : undefined,

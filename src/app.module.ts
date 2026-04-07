@@ -20,6 +20,7 @@ import { ObservabilityModule } from './observability/observability.module';
 import { SecurityModule } from './security/security.module';
 import { StoreCategoriesModule } from './store-categories/store-categories.module';
 import { CouponsModule } from './coupons/coupons.module';
+import { PaymentMethodsModule } from './payment-methods/payment-methods.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { CouponsModule } from './coupons/coupons.module';
     ObservabilityModule,
     StoreCategoriesModule,
     CouponsModule,
+    PaymentMethodsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

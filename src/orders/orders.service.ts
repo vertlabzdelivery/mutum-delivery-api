@@ -13,6 +13,7 @@ import { ORDER_STATUS_FLOW } from './constants/order-status-flow';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { StructuredLoggerService } from '../observability/structured-logger.service';
 import { CouponsService } from '../coupons/coupons.service';
+import { PaymentMethodsService } from '../payment-methods/payment-methods.service';
 
 @Injectable()
 export class OrdersService {
@@ -22,6 +23,7 @@ export class OrdersService {
     private readonly ablyRealtimeService: AblyRealtimeService,
     private readonly logger: StructuredLoggerService,
     private readonly couponsService: CouponsService,
+    private readonly paymentMethodsService: PaymentMethodsService,
   ) {}
 
   async quote(userId: string, dto: CreateOrderDto) {
@@ -666,6 +668,12 @@ export class OrdersService {
         `O pedido mínimo deste restaurante é R$ ${restaurant.minOrder.toString()}`,
       );
     }
+
+    await this.paymentMethodsService.ensureRestaurantAcceptsPaymentMethod(
+      this.prisma,
+      dto.restaurantId,
+      dto.paymentMethod,
+    );
 
     if (dto.paymentMethod === PaymentMethod.CASH) {
       if (

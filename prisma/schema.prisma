@@ -144,6 +144,7 @@ model Restaurant {
 
   favorites      RestaurantFavorite[]
   reviews        RestaurantReview[]
+  acceptedPaymentMethods RestaurantAcceptedPaymentMethod[]
   menuCategories  MenuCategory[]
   menuItems       MenuItem[]
   orders          Order[]
@@ -198,6 +199,36 @@ model RestaurantReview {
   @@index([createdAt])
   @@index([restaurantId, createdAt])
   @@index([userId, restaurantId, createdAt])
+}
+
+model PaymentMethodOption {
+  id          String        @id @default(uuid())
+  code        PaymentMethod @unique
+  name        String
+  description String?
+  icon        String?
+  sortOrder   Int           @default(0)
+  isActive    Boolean       @default(true)
+  restaurants RestaurantAcceptedPaymentMethod[]
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([isActive])
+  @@index([sortOrder])
+}
+
+model RestaurantAcceptedPaymentMethod {
+  restaurantId          String
+  paymentMethodOptionId String
+  assignedAt            DateTime @default(now())
+
+  restaurant            Restaurant         @relation(fields: [restaurantId], references: [id])
+  paymentMethodOption   PaymentMethodOption @relation(fields: [paymentMethodOptionId], references: [id])
+
+  @@id([restaurantId, paymentMethodOptionId])
+  @@index([restaurantId])
+  @@index([paymentMethodOptionId])
 }
 
 model StoreCategory {
