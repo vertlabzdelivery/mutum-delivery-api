@@ -44,6 +44,9 @@ model User {
 
   @@index([isActive])
   @@index([deletedAt])
+  @@index([phone])
+  @@index([role])
+  @@index([phone, isActive, deletedAt])
 }
 
 model State {
@@ -178,19 +181,23 @@ model RestaurantReview {
   id           String   @id @default(uuid())
   userId       String
   restaurantId String
+  orderId      String   @unique
   rating       Int
   comment      String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  user         User      @relation(fields: [userId], references: [id])
+  user         User       @relation(fields: [userId], references: [id])
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  order        Order      @relation(fields: [orderId], references: [id])
 
-  @@unique([userId, restaurantId])
   @@index([userId])
   @@index([restaurantId])
+  @@index([orderId])
   @@index([rating])
   @@index([createdAt])
+  @@index([restaurantId, createdAt])
+  @@index([userId, restaurantId, createdAt])
 }
 
 model StoreCategory {
@@ -479,6 +486,7 @@ model Order {
   billingItems         RestaurantBillingItem[]
   promotionalCouponUsage PromotionalCouponUsage?
   referralUsage        ReferralUsage?
+  restaurantReview    RestaurantReview?
 
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
@@ -491,6 +499,10 @@ model Order {
   @@index([promotionalCouponId])
   @@index([referralOwnerUserId])
   @@index([couponCode])
+  @@index([userId, createdAt])
+  @@index([restaurantId, createdAt])
+  @@index([restaurantId, status])
+  @@index([userId, restaurantId, status])
 }
 
 model PromotionalCoupon {

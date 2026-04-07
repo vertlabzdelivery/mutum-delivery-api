@@ -28,8 +28,11 @@ export class RestaurantsController {
   constructor(private readonly restaurantsService: RestaurantsService) {}
 
   @Get('active')
-  findActive() {
-    return this.restaurantsService.findActive();
+  findActive(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.restaurantsService.findActive(Number(page || 1), Number(limit || 50));
   }
 
   @UseGuards(JwtAuthGuard)
@@ -54,9 +57,14 @@ export class RestaurantsController {
     return this.restaurantsService.findOwnedByUser(user.userId);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
   @Get()
-  findAll() {
-    return this.restaurantsService.findAll();
+  findAll(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.restaurantsService.findAll(Number(page || 1), Number(limit || 50));
   }
 
   @UseGuards(JwtAuthGuard)
@@ -91,8 +99,9 @@ export class RestaurantsController {
   getMyReview(
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() user: CurrentUserData,
+    @Query('orderId') orderId?: string,
   ) {
-    return this.restaurantsService.getMyRestaurantReview(id, user.userId);
+    return this.restaurantsService.getMyRestaurantReview(id, user.userId, orderId);
   }
 
   @UseGuards(JwtAuthGuard)

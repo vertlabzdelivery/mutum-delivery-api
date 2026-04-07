@@ -42,7 +42,11 @@ export class AdminCouponsController {
   }
 
   @Get(':id/usages')
-  usages(@Param('id', new ParseUUIDPipe()) id: string) {
-    return this.couponsService.listPromotionalCouponUsages(id);
+  usages(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.couponsService.listPromotionalCouponUsages(id, Number(page || 1), Number(limit || 50));
   }
 }

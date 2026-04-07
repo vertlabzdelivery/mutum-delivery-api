@@ -297,32 +297,34 @@ export class MenuService {
   }
 
   async findOne(id: string) {
-    return this.cache.getOrSet(
-      CacheKeys.menuItem(id),
-      this.cache.getTtlSeconds('CACHE_TTL_MENU_ITEM', 120),
-      async () => {
-        const item = await this.prisma.menuItem.findUnique({
-          where: { id },
-          include: {
-            ...this.menuItemInclude(),
-            restaurant: {
-              select: {
-                id: true,
-                name: true,
-                isActive: true,
-                ownerId: true,
-              },
-            },
+    const cached = await this.cache.get<any>(CacheKeys.menuItem(id));
+    if (cached) return cached;
+
+    const item = await this.prisma.menuItem.findUnique({
+      where: { id },
+      include: {
+        ...this.menuItemInclude(),
+        restaurant: {
+          select: {
+            id: true,
+            name: true,
+            isActive: true,
+            ownerId: true,
           },
-        });
-
-        if (!item) {
-          throw new NotFoundException('Item do cardápio não encontrado');
-        }
-
-        return item;
+        },
       },
+    });
+
+    if (!item) {
+      throw new NotFoundException('Item do cardápio não encontrado');
+    }
+
+    await this.cache.set(
+      CacheKeys.menuItem(id),
+      item,
+      this.cache.getTtlSeconds('CACHE_TTL_MENU_ITEM', 120),
     );
+    return item;
   }
 
   async update(

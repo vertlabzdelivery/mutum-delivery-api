@@ -34,8 +34,10 @@ export class BillingController {
   listCycles(
     @CurrentUser() user: CurrentUserData,
     @Query('restaurantId') restaurantId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.billingService.listCycles(user, restaurantId);
+    return this.billingService.listCycles(user, restaurantId, Number(page || 1), Number(limit || 30));
   }
 
   @Post('cycles/save')

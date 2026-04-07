@@ -54,28 +54,30 @@ export class LocationsService {
   }
 
   async findStateById(id: string) {
-    return this.cache.getOrSet(
-      CacheKeys.state(id),
-      this.cache.getTtlSeconds('CACHE_TTL_LOCATIONS', 86400),
-      async () => {
-        const state = await this.prisma.state.findUnique({
-          where: { id },
-          include: {
-            cities: {
-              orderBy: {
-                name: 'asc',
-              },
-            },
+    const cached = await this.cache.get<any>(CacheKeys.state(id));
+    if (cached) return cached;
+
+    const state = await this.prisma.state.findUnique({
+      where: { id },
+      include: {
+        cities: {
+          orderBy: {
+            name: 'asc',
           },
-        });
-
-        if (!state) {
-          throw new NotFoundException('Estado não encontrado');
-        }
-
-        return state;
+        },
       },
+    });
+
+    if (!state) {
+      throw new NotFoundException('Estado não encontrado');
+    }
+
+    await this.cache.set(
+      CacheKeys.state(id),
+      state,
+      this.cache.getTtlSeconds('CACHE_TTL_LOCATIONS', 86400),
     );
+    return state;
   }
 
   async createCity(dto: CreateCityDto) {
@@ -140,29 +142,31 @@ export class LocationsService {
   }
 
   async findCityById(id: string) {
-    return this.cache.getOrSet(
-      CacheKeys.city(id),
-      this.cache.getTtlSeconds('CACHE_TTL_LOCATIONS', 86400),
-      async () => {
-        const city = await this.prisma.city.findUnique({
-          where: { id },
-          include: {
-            state: true,
-            neighborhoods: {
-              orderBy: {
-                name: 'asc',
-              },
-            },
+    const cached = await this.cache.get<any>(CacheKeys.city(id));
+    if (cached) return cached;
+
+    const city = await this.prisma.city.findUnique({
+      where: { id },
+      include: {
+        state: true,
+        neighborhoods: {
+          orderBy: {
+            name: 'asc',
           },
-        });
-
-        if (!city) {
-          throw new NotFoundException('Cidade não encontrada');
-        }
-
-        return city;
+        },
       },
+    });
+
+    if (!city) {
+      throw new NotFoundException('Cidade não encontrada');
+    }
+
+    await this.cache.set(
+      CacheKeys.city(id),
+      city,
+      this.cache.getTtlSeconds('CACHE_TTL_LOCATIONS', 86400),
     );
+    return city;
   }
 
   async createNeighborhood(dto: CreateNeighborhoodDto) {
@@ -235,28 +239,30 @@ export class LocationsService {
   }
 
   async findNeighborhoodById(id: string) {
-    return this.cache.getOrSet(
-      CacheKeys.neighborhood(id),
-      this.cache.getTtlSeconds('CACHE_TTL_LOCATIONS', 86400),
-      async () => {
-        const neighborhood = await this.prisma.neighborhood.findUnique({
-          where: { id },
+    const cached = await this.cache.get<any>(CacheKeys.neighborhood(id));
+    if (cached) return cached;
+
+    const neighborhood = await this.prisma.neighborhood.findUnique({
+      where: { id },
+      include: {
+        city: {
           include: {
-            city: {
-              include: {
-                state: true,
-              },
-            },
+            state: true,
           },
-        });
-
-        if (!neighborhood) {
-          throw new NotFoundException('Bairro não encontrado');
-        }
-
-        return neighborhood;
+        },
       },
+    });
+
+    if (!neighborhood) {
+      throw new NotFoundException('Bairro não encontrado');
+    }
+
+    await this.cache.set(
+      CacheKeys.neighborhood(id),
+      neighborhood,
+      this.cache.getTtlSeconds('CACHE_TTL_LOCATIONS', 86400),
     );
+    return neighborhood;
   }
 
   private async invalidateLocationsCache(stateId?: string, cityId?: string) {

@@ -400,16 +400,35 @@ export class CouponsService {
     return this.updatePromotionalCoupon(id, { isActive: false });
   }
 
-  async listPromotionalCouponUsages(id: string) {
+  async listPromotionalCouponUsages(id: string, page = 1, limit = 50) {
     await this.getPromotionalCouponById(id);
-    return this.prisma.promotionalCouponUsage.findMany({
-      where: { promotionalCouponId: id },
-      include: {
-        user: { select: { id: true, name: true, email: true } },
-        order: { select: { id: true, total: true, status: true, createdAt: true } },
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(Math.max(1, limit), 100);
+    const skip = (safePage - 1) * safeLimit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.promotionalCouponUsage.findMany({
+        where: { promotionalCouponId: id },
+        include: {
+          user: { select: { id: true, name: true, email: true } },
+          order: { select: { id: true, total: true, status: true, createdAt: true } },
+        },
+        orderBy: { usedAt: 'desc' },
+        skip,
+        take: safeLimit,
+      }),
+      this.prisma.promotionalCouponUsage.count({ where: { promotionalCouponId: id } }),
+    ]);
+
+    return {
+      data,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(total / safeLimit),
       },
-      orderBy: { usedAt: 'desc' },
-    });
+    };
   }
 
   async getMyReferralCode(userId: string) {
@@ -429,7 +448,7 @@ export class CouponsService {
         include: {
           referralUsage: {
             select: {
-              referredUser: { select: { id: true, name: true, email: true } },
+              referredUser: { select: { id: true, name: true } },
             },
           },
         },
@@ -462,7 +481,7 @@ export class CouponsService {
       this.prisma.referralUsage.findMany({
         where: { referralOwnerUserId: userId },
         include: {
-          referredUser: { select: { id: true, name: true, email: true } },
+          referredUser: { select: { id: true, name: true } },
           reward: { select: { id: true, code: true, status: true, grantedAt: true, usedAt: true } },
         },
         orderBy: { createdAt: 'desc' },
@@ -470,7 +489,7 @@ export class CouponsService {
       this.prisma.referralUsage.findMany({
         where: { referredUserId: userId },
         include: {
-          referralOwnerUser: { select: { id: true, name: true, email: true, referralCode: true } },
+          referralOwnerUser: { select: { id: true, name: true, referralCode: true } },
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -724,21 +743,6 @@ export class CouponsService {
     minOrderAmount: Prisma.Decimal;
     endsAt: Date | null;
   }) {
-    const users = await this.prisma.user.findMany({
-      where: {
-        role: Role.USER,
-        isActive: true,
-        deletedAt: null,
-        expoPushToken: { not: null },
-      },
-      select: {
-        id: true,
-        expoPushToken: true,
-      },
-    });
-
-    if (!users.length) return;
-
     const title = 'Novo cupom disponível';
     const maxDiscountText = coupon.maxDiscountAmount
       ? ` • até R$ ${Number(coupon.maxDiscountAmount).toFixed(2).replace('.', ',')}`
@@ -751,19 +755,38 @@ export class CouponsService {
       : '';
     const body = `Use ${coupon.code} e ganhe ${Number(coupon.discountValue).toFixed(0)}% de desconto${maxDiscountText}${minOrderText}${endsAtText}`;
 
-    await Promise.allSettled(
-      users.map((user) =>
-        this.pushNotificationsService.sendToExpoPushToken(String(user.expoPushToken || ''), {
-          title,
-          body,
-          data: {
-            type: 'NEW_PROMOTIONAL_COUPON',
-            couponId: coupon.id,
-            couponCode: coupon.code,
-          },
-        }),
-      ),
-    );
+    const BATCH_SIZE = 50;
+    let cursorId: string | undefined;
+
+    for (;;) {
+      const users = await this.prisma.user.findMany({
+        where: {
+          role: Role.USER,
+          isActive: true,
+          deletedAt: null,
+          expoPushToken: { not: null },
+        },
+        select: { id: true, expoPushToken: true },
+        orderBy: { id: 'asc' },
+        take: BATCH_SIZE,
+        ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+      });
+
+      if (!users.length) break;
+
+      await Promise.allSettled(
+        users.map((user) =>
+          this.pushNotificationsService.sendToExpoPushToken(String(user.expoPushToken || ''), {
+            title,
+            body,
+            data: { type: 'NEW_PROMOTIONAL_COUPON', couponId: coupon.id, couponCode: coupon.code },
+          }),
+        ),
+      );
+
+      cursorId = users[users.length - 1]?.id;
+      if (users.length < BATCH_SIZE) break;
+    }
   }
 
   private ensureDateWindow(startsAt?: string, endsAt?: string) {

@@ -203,42 +203,63 @@ export class BillingService {
   async listCycles(
     currentUser: CurrentUserData,
     restaurantId?: string,
+    page = 1,
+    limit = 30,
   ) {
     const scopedRestaurantId = await this.resolveRestaurantIdForCycleList(
       currentUser,
       restaurantId,
     );
 
-    const cycles = await this.prisma.restaurantBillingCycle.findMany({
-      where: scopedRestaurantId ? { restaurantId: scopedRestaurantId } : undefined,
-      include: {
-        restaurant: {
-          select: {
-            id: true,
-            name: true,
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(Math.max(1, limit), 100);
+    const skip = (safePage - 1) * safeLimit;
+
+    const where = scopedRestaurantId ? { restaurantId: scopedRestaurantId } : undefined;
+
+    const [cycles, total] = await Promise.all([
+      this.prisma.restaurantBillingCycle.findMany({
+        where,
+        include: {
+          restaurant: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          payments: {
+            orderBy: { paidAt: 'desc' },
           },
         },
-        payments: {
-          orderBy: { paidAt: 'desc' },
-        },
-      },
-      orderBy: [{ periodStart: 'desc' }, { createdAt: 'desc' }],
-    });
+        orderBy: [{ periodStart: 'desc' }, { createdAt: 'desc' }],
+        skip,
+        take: safeLimit,
+      }),
+      this.prisma.restaurantBillingCycle.count({ where }),
+    ]);
 
-    return cycles.map((cycle) => ({
-      ...cycle,
-      grossSales: this.decimalToNumber(cycle.grossSales),
-      canceledSales: this.decimalToNumber(cycle.canceledSales),
-      commissionRate: this.decimalToPercent(cycle.commissionRate),
-      commissionAmount: this.decimalToNumber(cycle.commissionAmount),
-      netSales: this.decimalToNumber(cycle.netSales),
-      amountPaid: this.decimalToNumber(cycle.amountPaid),
-      amountDue: this.decimalToNumber(cycle.amountDue),
-      payments: cycle.payments.map((payment) => ({
-        ...payment,
-        amount: this.decimalToNumber(payment.amount),
+    return {
+      data: cycles.map((cycle) => ({
+        ...cycle,
+        grossSales: this.decimalToNumber(cycle.grossSales),
+        canceledSales: this.decimalToNumber(cycle.canceledSales),
+        commissionRate: this.decimalToPercent(cycle.commissionRate),
+        commissionAmount: this.decimalToNumber(cycle.commissionAmount),
+        netSales: this.decimalToNumber(cycle.netSales),
+        amountPaid: this.decimalToNumber(cycle.amountPaid),
+        amountDue: this.decimalToNumber(cycle.amountDue),
+        payments: cycle.payments.map((payment) => ({
+          ...payment,
+          amount: this.decimalToNumber(payment.amount),
+        })),
       })),
-    }));
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(total / safeLimit),
+      },
+    };
   }
 
   private async resolveRestaurantAndRange(

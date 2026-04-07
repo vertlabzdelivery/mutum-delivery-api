@@ -1,6 +1,9 @@
-import { IsInt, IsOptional, IsString, Max, Min, MaxLength } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
 
 export class UpsertRestaurantReviewDto {
+  @IsUUID()
+  orderId: string;
+
   @IsInt()
   @Min(1)
   @Max(5)

@@ -61,7 +61,7 @@ export class AuthService {
     await this.ensureEmailAvailable(email);
     await this.ensurePhoneAvailable(phone);
 
-    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const passwordHash = await bcrypt.hash(dto.password, this.getBcryptRounds());
 
     try {
       const user = await this.usersService.create({
@@ -91,7 +91,7 @@ export class AuthService {
       if (!city) throw new NotFoundException('Cidade não encontrada');
     }
 
-    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const passwordHash = await bcrypt.hash(dto.password, this.getBcryptRounds());
 
     try {
       const result = await this.prisma.$transaction(async (tx) => {
@@ -387,7 +387,7 @@ export class AuthService {
       throw new UnauthorizedException('A autorização expirou. Solicite um novo código.');
     }
 
-    const passwordHash = await bcrypt.hash(dto.newPassword, 10);
+    const passwordHash = await bcrypt.hash(dto.newPassword, this.getBcryptRounds());
     const consumedAt = new Date();
 
     await this.prisma.$transaction([
@@ -642,17 +642,16 @@ export class AuthService {
    * Agora faz query diretamente no banco com phoneVerifiedAt e isActive filtrados.
    */
   private async findUserByVerifiedPhone(normalizedPhone: string) {
-    const users = await this.prisma.user.findMany({
+    // Busca direto no banco em vez de carregar todos os usuários em memória
+    return this.prisma.user.findFirst({
       where: {
+        phone: normalizedPhone,
         phoneVerifiedAt: { not: null },
         isActive: true,
         deletedAt: null,
       },
       select: { id: true, phone: true, phoneVerifiedAt: true, isActive: true, deletedAt: true },
     });
-
-    // Normaliza e compara (necessário porque o banco guarda formatos variados)
-    return users.find((u) => this.normalizePhoneOrNull(u.phone) === normalizedPhone) ?? null;
   }
 
   private normalizePhoneOrNull(phone?: string | null) {
@@ -673,21 +672,18 @@ export class AuthService {
   private async ensurePhoneAvailable(phone: string | null, ignoreUserId?: string) {
     if (!phone) return;
 
-    const usersWithPhone = await this.prisma.user.findMany({
+    // Busca direto no banco pelo telefone normalizado em vez de carregar todos
+    const existingUser = await this.prisma.user.findFirst({
       where: {
-        phone: { not: null },
+        phone,
         isActive: true,
         deletedAt: null,
         ...(ignoreUserId ? { id: { not: ignoreUserId } } : {}),
       },
-      select: { id: true, phone: true },
+      select: { id: true },
     });
 
-    const alreadyUsed = usersWithPhone.some(
-      (user) => this.normalizePhoneOrNull(user.phone) === phone,
-    );
-
-    if (alreadyUsed) {
+    if (existingUser) {
       throw new BadRequestException('Telefone já cadastrado em outra conta');
     }
   }
@@ -756,6 +752,11 @@ export class AuthService {
 
   private hashRefreshToken(value: string) {
     return createHash('sha256').update(value).digest('hex');
+  }
+
+  private getBcryptRounds() {
+    const rounds = Number(this.configService.get<string>('BCRYPT_ROUNDS', '10'));
+    return Number.isFinite(rounds) && rounds >= 8 && rounds <= 15 ? rounds : 10;
   }
 
   private getRefreshSessionKey(sessionId: string) {

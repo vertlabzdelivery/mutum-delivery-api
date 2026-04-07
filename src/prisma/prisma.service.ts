@@ -11,6 +11,12 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
         { emit: 'stdout', level: 'warn' },
         { emit: 'stdout', level: 'error' },
       ],
+      // Pool de conexões para suportar muitas requisições simultâneas
+      datasources: {
+        db: {
+          url: process.env.DATABASE_URL,
+        },
+      },
     });
 
     this.$on('query' as never, (event: any) => {
@@ -18,8 +24,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       if (Number(event?.duration) >= threshold) {
         this.logger.warn('db.query.slow', {
           durationMs: Number(event.duration),
-          query: event.query,
-          params: event.params,
+          query: String(event.query || '').slice(0, 500),
+          params: String(event.params || '').slice(0, 300),
           target: event.target,
         });
       }

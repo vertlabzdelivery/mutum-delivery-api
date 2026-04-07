@@ -15,6 +15,9 @@ export class EphemeralStoreService {
    * garantir rate-limiting consistente em produção.
    */
   private readonly memory = new Map<string, MemoryEntry>();
+  private static readonly MAX_MEMORY_ENTRIES = 10_000;
+  private lastGcAt = 0;
+  private static readonly GC_INTERVAL_MS = 30_000; // GC a cada 30s no máximo
 
   constructor(private readonly cache: RedisCacheService) {}
 
@@ -84,9 +87,24 @@ export class EphemeralStoreService {
 
   private gc() {
     const now = Date.now();
+    // Throttle: só roda GC a cada 30s para evitar overhead em alta concorrência
+    if (now - this.lastGcAt < EphemeralStoreService.GC_INTERVAL_MS) return;
+    this.lastGcAt = now;
+
     for (const [key, value] of this.memory.entries()) {
       if (value.expiresAt && value.expiresAt <= now) {
         this.memory.delete(key);
+      }
+    }
+
+    // Eviction de segurança: se ultrapassar o limite, remove as mais antigas
+    if (this.memory.size > EphemeralStoreService.MAX_MEMORY_ENTRIES) {
+      const excess = this.memory.size - EphemeralStoreService.MAX_MEMORY_ENTRIES;
+      const iterator = this.memory.keys();
+      for (let i = 0; i < excess; i++) {
+        const next = iterator.next();
+        if (next.done) break;
+        this.memory.delete(next.value);
       }
     }
   }

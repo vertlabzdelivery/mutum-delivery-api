@@ -63,39 +63,71 @@ export class RestaurantsService {
     return serialized;
   }
 
-  async findAll() {
+  async findAll(page = 1, limit = 50) {
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(Math.max(1, limit), 100);
+    const skip = (safePage - 1) * safeLimit;
+
+    const cacheKey = `${CacheKeys.restaurantsAll}:p${safePage}:l${safeLimit}`;
+
     return this.cache.getOrSet(
-      CacheKeys.restaurantsAll,
+      cacheKey,
       this.cache.getTtlSeconds('CACHE_TTL_RESTAURANTS', 60),
       async () => {
-        const restaurants = await this.prisma.restaurant.findMany({
-          orderBy: {
-            createdAt: 'desc',
-          },
-          include: this.restaurantInclude(),
-        });
+        const [restaurants, total] = await Promise.all([
+          this.prisma.restaurant.findMany({
+            orderBy: { createdAt: 'desc' },
+            skip,
+            take: safeLimit,
+            include: this.restaurantInclude(),
+          }),
+          this.prisma.restaurant.count(),
+        ]);
 
-        return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
+        return {
+          data: restaurants.map((restaurant) => this.serializeRestaurant(restaurant)),
+          pagination: {
+            page: safePage,
+            limit: safeLimit,
+            total,
+            totalPages: Math.ceil(total / safeLimit),
+          },
+        };
       },
     );
   }
 
-  async findActive() {
+  async findActive(page = 1, limit = 50) {
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(Math.max(1, limit), 100);
+    const skip = (safePage - 1) * safeLimit;
+
+    const cacheKey = `${CacheKeys.restaurantsActive}:p${safePage}:l${safeLimit}`;
+
     return this.cache.getOrSet(
-      CacheKeys.restaurantsActive,
+      cacheKey,
       this.cache.getTtlSeconds('CACHE_TTL_RESTAURANTS', 60),
       async () => {
-        const restaurants = await this.prisma.restaurant.findMany({
-          where: {
-            isActive: true,
-          },
-          orderBy: {
-            createdAt: 'desc',
-          },
-          include: this.restaurantInclude(false),
-        });
+        const [restaurants, total] = await Promise.all([
+          this.prisma.restaurant.findMany({
+            where: { isActive: true },
+            orderBy: { createdAt: 'desc' },
+            skip,
+            take: safeLimit,
+            include: this.restaurantInclude(false),
+          }),
+          this.prisma.restaurant.count({ where: { isActive: true } }),
+        ]);
 
-        return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
+        return {
+          data: restaurants.map((restaurant) => this.serializeRestaurant(restaurant)),
+          pagination: {
+            page: safePage,
+            limit: safeLimit,
+            total,
+            totalPages: Math.ceil(total / safeLimit),
+          },
+        };
       },
     );
   }
@@ -186,7 +218,9 @@ export class RestaurantsService {
       orderBy: [{ createdAt: 'desc' }],
     });
 
-    return restaurants.map((restaurant) => this.serializeRestaurant(restaurant));
+    return this.sortRestaurantsForUser(
+      restaurants.map((restaurant) => this.serializeRestaurant(restaurant)),
+    );
   }
 
   async findFavoriteRestaurants(userId: string) {
@@ -313,15 +347,24 @@ export class RestaurantsService {
     };
   }
 
-  async getMyRestaurantReview(restaurantId: string, userId: string) {
+  async getMyRestaurantReview(restaurantId: string, userId: string, orderId?: string) {
     await this.ensureRestaurantPubliclyAvailable(restaurantId);
-    return this.prisma.restaurantReview.findUnique({
-      where: {
-        userId_restaurantId: {
-          userId,
-          restaurantId,
-        },
-      },
+
+    if (orderId) {
+      const review = await this.prisma.restaurantReview.findUnique({
+        where: { orderId },
+      });
+
+      if (!review || review.userId !== userId || review.restaurantId !== restaurantId) {
+        return null;
+      }
+
+      return review;
+    }
+
+    return this.prisma.restaurantReview.findFirst({
+      where: { userId, restaurantId },
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
     });
   }
 
@@ -332,29 +375,24 @@ export class RestaurantsService {
   ) {
     await this.ensureRestaurantPubliclyAvailable(restaurantId);
 
-    const deliveredOrdersCount = await this.prisma.order.count({
-      where: {
-        userId,
-        restaurantId,
-        status: OrderStatus.DELIVERED,
-      },
+    const order = await this.prisma.order.findUnique({
+      where: { id: dto.orderId },
+      select: { id: true, userId: true, restaurantId: true, status: true },
     });
 
-    if (deliveredOrdersCount <= 0) {
-      throw new BadRequestException(
-        'Você só pode avaliar restaurantes após receber pelo menos um pedido.',
-      );
+    if (!order || order.userId !== userId || order.restaurantId !== restaurantId) {
+      throw new NotFoundException('Pedido não encontrado para avaliação neste restaurante.');
+    }
+
+    if (order.status !== OrderStatus.DELIVERED) {
+      throw new BadRequestException('Você só pode avaliar restaurantes após o pedido ser entregue.');
     }
 
     const review = await this.prisma.$transaction(async (tx) => {
       const saved = await tx.restaurantReview.upsert({
-        where: {
-          userId_restaurantId: {
-            userId,
-            restaurantId,
-          },
-        },
+        where: { orderId: dto.orderId },
         create: {
+          orderId: dto.orderId,
           userId,
           restaurantId,
           rating: dto.rating,
@@ -375,42 +413,47 @@ export class RestaurantsService {
   }
 
   async findOne(id: string) {
-    return this.cache.getOrSet(
-      CacheKeys.restaurantDetail(id),
-      this.cache.getTtlSeconds('CACHE_TTL_RESTAURANT_DETAIL', 90),
-      async () => {
-        const restaurant = await this.prisma.restaurant.findUnique({
-          where: { id },
+    // Não usar getOrSet aqui pois NotFoundException seria cacheada
+    // e um restaurante recém-criado ficaria 404 por 90 segundos
+    const cached = await this.cache.get<any>(CacheKeys.restaurantDetail(id));
+    if (cached) return cached;
+
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id },
+      include: {
+        ...this.restaurantInclude(),
+        deliveryZones: {
           include: {
-            ...this.restaurantInclude(),
-            deliveryZones: {
+            neighborhood: {
               include: {
-                neighborhood: {
+                city: {
                   include: {
-                    city: {
-                      include: {
-                        state: true,
-                      },
-                    },
+                    state: true,
                   },
-                },
-              },
-              orderBy: {
-                neighborhood: {
-                  name: 'asc',
                 },
               },
             },
           },
-        });
-
-        if (!restaurant) {
-          throw new NotFoundException('Restaurante não encontrado');
-        }
-
-        return this.serializeRestaurant(restaurant);
+          orderBy: {
+            neighborhood: {
+              name: 'asc',
+            },
+          },
+        },
       },
+    });
+
+    if (!restaurant) {
+      throw new NotFoundException('Restaurante não encontrado');
+    }
+
+    const serialized = this.serializeRestaurant(restaurant);
+    await this.cache.set(
+      CacheKeys.restaurantDetail(id),
+      serialized,
+      this.cache.getTtlSeconds('CACHE_TTL_RESTAURANT_DETAIL', 90),
     );
+    return serialized;
   }
 
   async update(
@@ -590,8 +633,8 @@ export class RestaurantsService {
       };
     }
 
-    const now = new Date();
-    const dayOfWeek = now.getDay();
+    const zonedNow = this.getBrazilNowParts();
+    const dayOfWeek = zonedNow.dayOfWeek;
     const todayHours = normalized.filter((item) => item.dayOfWeek === dayOfWeek);
 
     if (!todayHours.length) {
@@ -602,7 +645,7 @@ export class RestaurantsService {
       };
     }
 
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const currentMinutes = zonedNow.hour * 60 + zonedNow.minute;
 
     for (const slot of todayHours) {
       const openMinutes = this.timeToMinutes(slot.openTime);
@@ -632,6 +675,51 @@ export class RestaurantsService {
       statusLabel: `Fechado agora • Hoje ${firstSlot.openTime} às ${firstSlot.closeTime}`,
       todayLabel: `Hoje: ${firstSlot.openTime} às ${firstSlot.closeTime}`,
     };
+  }
+
+
+  private getBrazilNowParts() {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Sao_Paulo',
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date());
+
+    const partValue = (type: string) => parts.find((item) => item.type === type)?.value ?? '';
+    const weekdayMap: Record<string, number> = {
+      Sun: 0,
+      Mon: 1,
+      Tue: 2,
+      Wed: 3,
+      Thu: 4,
+      Fri: 5,
+      Sat: 6,
+    };
+
+    return {
+      dayOfWeek: weekdayMap[partValue('weekday')] ?? new Date().getDay(),
+      hour: Number(partValue('hour')) || 0,
+      minute: Number(partValue('minute')) || 0,
+    };
+  }
+
+  private sortRestaurantsForUser<T extends { isFavorite?: boolean | null; isOpenNow?: boolean | null; createdAt?: string | Date }>(restaurants: T[]) {
+    const toTime = (value?: string | Date) => {
+      if (!value) return 0;
+      return value instanceof Date ? value.getTime() : new Date(value).getTime();
+    };
+
+    return [...restaurants].sort((a, b) => {
+      const favoriteDelta = Number(Boolean(b.isFavorite)) - Number(Boolean(a.isFavorite));
+      if (favoriteDelta !== 0) return favoriteDelta;
+
+      const openDelta = Number(Boolean(b.isOpenNow)) - Number(Boolean(a.isOpenNow));
+      if (openDelta !== 0) return openDelta;
+
+      return toTime(b.createdAt) - toTime(a.createdAt);
+    });
   }
 
   private timeToMinutes(value: string) {

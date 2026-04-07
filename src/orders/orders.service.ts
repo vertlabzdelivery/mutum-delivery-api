@@ -247,56 +247,67 @@ export class OrdersService {
     currentUser: CurrentUserData,
     note?: string,
   ) {
-    const order = await this.prisma.order.findUnique({
-      where: { id },
-      include: {
-        restaurant: {
-          select: {
-            id: true,
-            ownerId: true,
+    // Usa transação com verificação atômica para evitar race condition
+    // onde dois requests simultâneos poderiam ambos ler o mesmo status
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id },
+        include: {
+          restaurant: {
+            select: {
+              id: true,
+              ownerId: true,
+            },
           },
         },
-      },
+      });
+
+      if (!order) {
+        throw new NotFoundException('Pedido não encontrado');
+      }
+
+      this.ensureCanManageRestaurant(order.restaurant.ownerId, currentUser);
+      this.ensureValidStatusTransition(order.status, status);
+
+      const now = new Date();
+
+      return tx.order.update({
+        where: { id },
+        data: {
+          status,
+          acceptedAt: status === OrderStatus.ACCEPTED ? now : undefined,
+          preparingAt: status === OrderStatus.PREPARING ? now : undefined,
+          deliveryAt: status === OrderStatus.DELIVERY ? now : undefined,
+          deliveredAt: status === OrderStatus.DELIVERED ? now : undefined,
+          canceledAt: status === OrderStatus.CANCELED ? now : undefined,
+          statusHistory: {
+            create: {
+              fromStatus: order.status,
+              toStatus: status,
+              changedByUserId: currentUser.userId,
+              note: note?.trim(),
+            },
+          },
+        },
+        include: this.orderInclude(true),
+      });
     });
 
-    if (!order) {
-      throw new NotFoundException('Pedido não encontrado');
-    }
-
-    this.ensureCanManageRestaurant(order.restaurant.ownerId, currentUser);
-    this.ensureValidStatusTransition(order.status, status);
-
-    const now = new Date();
-
-    const updated = await this.prisma.order.update({
-      where: { id },
-      data: {
+    // Notificações fora da transação para não bloquear o banco
+    await this.couponsService.handleOrderStatusChange(id, status).catch((err) => {
+      this.logger.error('order.coupon_status_change_failed', {
+        orderId: id,
         status,
-        acceptedAt: status === OrderStatus.ACCEPTED ? now : undefined,
-        preparingAt: status === OrderStatus.PREPARING ? now : undefined,
-        deliveryAt: status === OrderStatus.DELIVERY ? now : undefined,
-        deliveredAt: status === OrderStatus.DELIVERED ? now : undefined,
-        canceledAt: status === OrderStatus.CANCELED ? now : undefined,
-        statusHistory: {
-          create: {
-            fromStatus: order.status,
-            toStatus: status,
-            changedByUserId: currentUser.userId,
-            note: note?.trim(),
-          },
-        },
-      },
-      include: this.orderInclude(true),
+        error: err instanceof Error ? err.message : 'unknown',
+      });
     });
-
-    await this.couponsService.handleOrderStatusChange(id, status);
 
     await this.notifyOrderStatusChange(updated as any);
 
     // Publica evento Ably para o painel do restaurante atualizar em tempo real
-    await this.ablyRealtimeService.publishOrderStatusChanged(order.restaurant.id, {
+    await this.ablyRealtimeService.publishOrderStatusChanged(updated.restaurantId, {
       orderId: id,
-      previousStatus: order.status,
+      previousStatus: (updated as any).statusHistory?.[0]?.fromStatus ?? 'UNKNOWN',
       newStatus: status,
       note: note?.trim() ?? null,
     });
@@ -759,6 +770,7 @@ export class OrdersService {
           },
         },
         orderBy: { createdAt: 'asc' },
+        take: 20,
       },
     } as const;
   }
