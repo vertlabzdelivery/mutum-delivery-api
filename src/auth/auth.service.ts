@@ -110,6 +110,7 @@ export class AuthService {
             name: dto.restaurantName.trim(),
             description: dto.restaurantDescription?.trim(),
             logoUrl: dto.restaurantLogoUrl?.trim(),
+            bannerUrl: dto.restaurantBannerUrl?.trim(),
             phone: this.normalizePhoneOrNull(dto.restaurantPhone),
             address: dto.address.trim(),
             cityId: dto.cityId,

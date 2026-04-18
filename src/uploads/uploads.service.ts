@@ -44,6 +44,22 @@ export class UploadsService {
     });
   }
 
+  async uploadRestaurantBanner(
+    file: MulterLikeFile | undefined,
+    restaurantId: string,
+    currentUser: CurrentUserData,
+  ) {
+    const restaurant = await this.ensureRestaurantAccess(restaurantId, currentUser);
+
+    return this.uploadImage(file, {
+      maxBytes: this.getBytesEnv('BLOB_MAX_RESTAURANT_BANNER_BYTES', 1_572_864),
+      pathname: `restaurants/${restaurant.id}/banner/${this.buildFileName(
+        `${restaurant.name || 'restaurante'}-banner`,
+        file?.mimetype,
+      )}`,
+    });
+  }
+
   async uploadMenuItemImage(
     file: MulterLikeFile | undefined,
     restaurantId: string,

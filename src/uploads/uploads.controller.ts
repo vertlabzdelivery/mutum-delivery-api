@@ -40,6 +40,21 @@ export class UploadsController {
     return this.uploadsService.uploadRestaurantLogo(file, restaurantId, currentUser);
   }
 
+  @Post('restaurant-banner')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: uploadLimitBytes },
+    }),
+  )
+  uploadRestaurantBanner(
+    @UploadedFile() file: any,
+    @Body('restaurantId', new ParseUUIDPipe()) restaurantId: string,
+    @CurrentUser() currentUser: CurrentUserData,
+  ) {
+    return this.uploadsService.uploadRestaurantBanner(file, restaurantId, currentUser);
+  }
+
   @Post('menu-item-image')
   @UseInterceptors(
     FileInterceptor('file', {

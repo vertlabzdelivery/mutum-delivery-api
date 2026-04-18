@@ -36,6 +36,10 @@ export class RegisterRestaurantDto {
 
   @IsOptional()
   @IsString()
+  restaurantBannerUrl?: string;
+
+  @IsOptional()
+  @IsString()
   restaurantPhone?: string;
 
   @IsString()
